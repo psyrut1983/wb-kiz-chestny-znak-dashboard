@@ -194,19 +194,18 @@ function fetchWbKizRows_(entity, period) {
     try {
       const orders = fetchCompletedOrders_(mode, entity.wbToken, period)
         .filter(order => isOrderInsidePeriod_(order, period));
+      const metaMap = fetchOrderMetaMap_(mode, entity.wbToken, orders, entity.entityId);
+
       orders.forEach(order => {
         const orderId = getOrderId_(order);
         if (!orderId) return;
 
-        let meta = {};
-        try {
-          meta = fetchOrderMeta_(mode, entity.wbToken, orderId);
-        } catch (metaErr) {
-          appendError_(entity.entityId, 'fetchOrderMeta:' + mode, String(orderId), '', metaErr.message, JSON.stringify(order).slice(0, 3000));
+        const kizList = metaMap[String(orderId)] || [];
+        if (!kizList.length) {
+          appendError_(entity.entityId, 'orderWithoutSgtin:' + mode, String(orderId), '', 'В метаданных заказа не найден sgtin', JSON.stringify(order).slice(0, 3000));
           return;
         }
 
-        const kizList = extractSgtins_(meta);
         kizList.forEach(kiz => {
           rows.push(normalizeKizRow_(entity, mode, order, kiz, period));
         });
@@ -224,6 +223,31 @@ function fetchWbKizRows_(entity, period) {
   return rows;
 }
 
+function fetchOrderMetaMap_(mode, token, orders, entityId) {
+  if (!orders.length) return {};
+  if (mode !== 'fbs') return {};
+
+  const out = {};
+  const orderIds = orders.map(getOrderId_).filter(Boolean);
+  chunk_(orderIds, 100).forEach(ids => {
+    try {
+      const response = wbPostJson_(
+        'https://marketplace-api.wildberries.ru/api/marketplace/v3/orders/meta',
+        token,
+        { orders: ids.map(Number) }
+      );
+      extractBulkMetaItems_(response).forEach(item => {
+        const id = String(item.id || item.orderId || item.orderID || '');
+        if (!id) return;
+        out[id] = extractSgtins_(item);
+      });
+    } catch (err) {
+      appendError_(entityId, 'fetchOrdersMetaBulk:' + mode, ids.join(','), '', err.message, '');
+    }
+  });
+  return out;
+}
+
 function fetchCompletedOrders_(mode, token, period) {
   const base = ordersBasePath_(mode);
   const url = 'https://marketplace-api.wildberries.ru' + base
@@ -232,15 +256,6 @@ function fetchCompletedOrders_(mode, token, period) {
   if (Array.isArray(data.orders)) return data.orders;
   if (Array.isArray(data)) return data;
   return [];
-}
-
-function fetchOrderMeta_(mode, token, orderId) {
-  const url = 'https://marketplace-api.wildberries.ru'
-    + ordersBasePath_(mode)
-    + '/'
-    + encodeURIComponent(orderId)
-    + '/meta/sgtin';
-  return wbFetchJson_(url, token);
 }
 
 function ordersBasePath_(mode) {
@@ -252,6 +267,22 @@ function ordersBasePath_(mode) {
 function wbFetchJson_(url, token) {
   const response = UrlFetchApp.fetch(url, {
     method: 'get',
+    headers: { Authorization: token },
+    muteHttpExceptions: true
+  });
+  const code = response.getResponseCode();
+  const body = response.getContentText();
+  if (code < 200 || code >= 300) {
+    throw new Error('WB HTTP ' + code + ': ' + body.slice(0, 500));
+  }
+  return body ? JSON.parse(body) : {};
+}
+
+function wbPostJson_(url, token, payload) {
+  const response = UrlFetchApp.fetch(url, {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify(payload || {}),
     headers: { Authorization: token },
     muteHttpExceptions: true
   });
@@ -312,6 +343,18 @@ function detectOperation_(order) {
 }
 
 function extractSgtins_(metaResponse) {
+  const details = Array.isArray(metaResponse.metaDetails) ? metaResponse.metaDetails : [];
+  const fromDetails = [];
+  details.forEach(detail => {
+    if (String(detail.key || '').toLowerCase() !== 'sgtin') return;
+    if (Array.isArray(detail.value)) {
+      detail.value.forEach(value => value && fromDetails.push(String(value)));
+    } else if (detail.value) {
+      String(detail.value).split(/[\n,; ]+/).forEach(value => value && fromDetails.push(value));
+    }
+  });
+  if (fromDetails.length) return unique_(fromDetails);
+
   const meta = metaResponse.meta || metaResponse;
   const sgtin = meta && meta.sgtin ? meta.sgtin : meta;
   const value = sgtin && sgtin.value != null ? sgtin.value : sgtin && sgtin.sgtin;
@@ -320,6 +363,15 @@ function extractSgtins_(metaResponse) {
   if (Array.isArray(metaResponse.sgtins)) return metaResponse.sgtins.map(String).filter(Boolean);
   if (Array.isArray(metaResponse.sgtin)) return metaResponse.sgtin.map(String).filter(Boolean);
   if (typeof metaResponse.sgtin === 'string') return [metaResponse.sgtin];
+  return [];
+}
+
+function extractBulkMetaItems_(response) {
+  if (Array.isArray(response)) return response;
+  if (Array.isArray(response.orders)) return response.orders;
+  if (Array.isArray(response.data)) return response.data;
+  if (Array.isArray(response.items)) return response.items;
+  if (Array.isArray(response.result)) return response.result;
   return [];
 }
 
@@ -339,6 +391,24 @@ function firstBarcode_(order) {
 
 function getOrderId_(order) {
   return order.id || order.orderId || order.orderID || order.rid || '';
+}
+
+function chunk_(items, size) {
+  const chunks = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
+
+function unique_(items) {
+  const seen = {};
+  return items.filter(item => {
+    const key = String(item);
+    if (seen[key]) return false;
+    seen[key] = true;
+    return true;
+  });
 }
 
 function appendNewDataRows_(entity, rows) {
