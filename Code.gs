@@ -90,8 +90,8 @@ function onOpen() {
 
 function setupWorkbook() {
   ensureSheet_(SHEETS.settings, SETTINGS_HEADERS, [
-    ['entity_1', 'Юрлицо 1', '', '', 'TRUE', SHEETS.entity1, 'auto', '', '', ''],
-    ['entity_2', 'Юрлицо 2', '', '', 'TRUE', SHEETS.entity2, 'auto', '', '', '']
+    ['entity_1', 'Юрлицо 1', '', '', 'TRUE', SHEETS.entity1, 'fbs', '', '', ''],
+    ['entity_2', 'Юрлицо 2', '', '', 'TRUE', SHEETS.entity2, 'fbs', '', '', '']
   ]);
   ensureSheet_(SHEETS.entity1, DATA_HEADERS, []);
   ensureSheet_(SHEETS.entity2, DATA_HEADERS, []);
@@ -192,7 +192,8 @@ function fetchWbKizRows_(entity, period) {
 
   modes.forEach(mode => {
     try {
-      const orders = fetchCompletedOrders_(mode, entity.wbToken, period);
+      const orders = fetchCompletedOrders_(mode, entity.wbToken, period)
+        .filter(order => isOrderInsidePeriod_(order, period));
       orders.forEach(order => {
         const orderId = getOrderId_(order);
         if (!orderId) return;
@@ -238,7 +239,7 @@ function fetchOrderMeta_(mode, token, orderId) {
     + ordersBasePath_(mode)
     + '/'
     + encodeURIComponent(orderId)
-    + '/meta';
+    + '/meta/sgtin';
   return wbFetchJson_(url, token);
 }
 
@@ -312,12 +313,22 @@ function detectOperation_(order) {
 
 function extractSgtins_(metaResponse) {
   const meta = metaResponse.meta || metaResponse;
-  const sgtin = meta && meta.sgtin;
-  if (!sgtin) return [];
-  const value = sgtin.value;
+  const sgtin = meta && meta.sgtin ? meta.sgtin : meta;
+  const value = sgtin && sgtin.value != null ? sgtin.value : sgtin && sgtin.sgtin;
   if (Array.isArray(value)) return value.map(String).filter(Boolean);
   if (value) return [String(value)];
+  if (Array.isArray(metaResponse.sgtins)) return metaResponse.sgtins.map(String).filter(Boolean);
+  if (Array.isArray(metaResponse.sgtin)) return metaResponse.sgtin.map(String).filter(Boolean);
+  if (typeof metaResponse.sgtin === 'string') return [metaResponse.sgtin];
   return [];
+}
+
+function isOrderInsidePeriod_(order, period) {
+  const rawDate = order.createdAt || order.convertedAt || order.date || order.updatedAt;
+  if (!rawDate) return true;
+  const date = new Date(rawDate);
+  if (Number.isNaN(date.getTime())) return true;
+  return date.getTime() >= period.from.getTime() && date.getTime() <= period.to.getTime();
 }
 
 function firstBarcode_(order) {
