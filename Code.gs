@@ -89,6 +89,11 @@ function onOpen() {
 }
 
 function setupWorkbook() {
+  setupWorkbook_();
+  SpreadsheetApp.getActive().toast('Структура таблицы готова', 'WB КИЗы', 5);
+}
+
+function setupWorkbook_() {
   ensureSheet_(SHEETS.settings, SETTINGS_HEADERS, [
     ['entity_1', 'Юрлицо 1', '', '', 'TRUE', SHEETS.entity1, 'fbs', '', '', ''],
     ['entity_2', 'Юрлицо 2', '', '', 'TRUE', SHEETS.entity2, 'fbs', '', '', '']
@@ -97,27 +102,46 @@ function setupWorkbook() {
   ensureSheet_(SHEETS.entity2, DATA_HEADERS, []);
   ensureSheet_(SHEETS.syncLog, LOG_HEADERS, []);
   ensureSheet_(SHEETS.errors, ERROR_HEADERS, []);
-  SpreadsheetApp.getActive().toast('Структура таблицы готова', 'WB КИЗы', 5);
 }
 
 function syncYesterdayManual() {
-  syncYesterdayAllEntities();
+  syncYesterdayAllEntities(true);
 }
 
-function syncYesterdayAllEntities() {
-  setupWorkbook();
+function syncYesterdayAllEntities(showToast) {
+  const shouldToast = showToast === true;
+  setupWorkbook_();
   const period = getYesterdayPeriod_();
   const entities = readSettings_().filter(entity => entity.isActive);
 
   if (!entities.length) {
+    if (shouldToast) SpreadsheetApp.getActive().toast('Нет активных юрлиц в settings', 'WB КИЗы', 8);
     throw new Error('Нет активных юрлиц в settings');
   }
 
-  entities.forEach(entity => syncEntity_(entity, period));
+  if (shouldToast) {
+    SpreadsheetApp.getActive().toast('Начал загрузку за ' + period.syncDate + ' · юрлиц: ' + entities.length, 'WB КИЗы', 8);
+  }
+
+  const results = entities.map(entity => syncEntity_(entity, period));
+
+  if (shouldToast) {
+    const ok = results.filter(result => result.status === 'OK').length;
+    const errors = results.length - ok;
+    const newRows = results.reduce((sum, result) => sum + result.newRows, 0);
+    const duplicateRows = results.reduce((sum, result) => sum + result.duplicateRows, 0);
+    SpreadsheetApp.getActive().toast(
+      'Готово: ' + ok + ' OK / ' + errors + ' ошибок · новых КИЗов: ' + newRows + ' · дублей: ' + duplicateRows,
+      'WB КИЗы',
+      12
+    );
+  }
+
+  return results;
 }
 
 function createDailyTrigger() {
-  deleteDailyTriggers();
+  deleteDailyTriggers_(true);
   ScriptApp.newTrigger('syncYesterdayAllEntities')
     .timeBased()
     .atHour(8)
@@ -128,9 +152,19 @@ function createDailyTrigger() {
 }
 
 function deleteDailyTriggers() {
+  const count = deleteDailyTriggers_(false);
+  SpreadsheetApp.getActive().toast('Удалено триггеров WB: ' + count, 'WB КИЗы', 5);
+}
+
+function deleteDailyTriggers_(silent) {
+  let count = 0;
   ScriptApp.getProjectTriggers()
     .filter(trigger => trigger.getHandlerFunction() === 'syncYesterdayAllEntities')
-    .forEach(trigger => ScriptApp.deleteTrigger(trigger));
+    .forEach(trigger => {
+      ScriptApp.deleteTrigger(trigger);
+      count += 1;
+    });
+  return count;
 }
 
 function syncEntity_(entity, period) {
@@ -172,6 +206,17 @@ function syncEntity_(entity, period) {
       message
     });
   }
+
+  return {
+    entityId: entity.entityId,
+    legalName: entity.legalName,
+    rowsLoaded,
+    newRows,
+    duplicateRows,
+    errors: errorCount,
+    status,
+    message
+  };
 }
 
 function validateEntity_(entity) {
