@@ -197,6 +197,7 @@ input:focus{border-color:var(--accent)}
 
 <script>
 const DEFAULT_SPREADSHEET_ID = '1Ol0SdvkxilSx5wnjwiUqWjDL6lpzWU8bGR5-xERWCe8';
+const DEFAULT_CLIENT_ID = '366976253303-h3c07t2n5jg5lqreerhln0rengh5thcq.apps.googleusercontent.com';
 const SETTINGS_SHEET = 'Настройки';
 const SCOPES = 'https://www.googleapis.com/auth/spreadsheets';
 const STORAGE_KEYS = {
@@ -399,7 +400,7 @@ function setBusy(value){
 
 function loadConfig(){
   state.spreadsheetId = localStorage.getItem(STORAGE_KEYS.spreadsheetId) || DEFAULT_SPREADSHEET_ID;
-  state.clientId = localStorage.getItem(STORAGE_KEYS.clientId) || '';
+  state.clientId = localStorage.getItem(STORAGE_KEYS.clientId) || DEFAULT_CLIENT_ID;
   el.spreadsheetId.value = state.spreadsheetId;
   el.clientId.value = state.clientId;
 }
