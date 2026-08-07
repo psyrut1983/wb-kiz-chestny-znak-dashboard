@@ -1,40 +1,51 @@
 /**
- * WB KIZ Daily Sync.
+ * Ежедневная загрузка КИЗов WB.
  *
- * First stage only:
- * - one Google Sheet is the database;
- * - settings contains two legal entities and WB tokens;
- * - Apps Script loads yesterday's WB marking codes every day;
- * - KIZ rows move through withdraw, introduce and archive tabs per entity;
- * - no HTML/UI here.
+ * Первый этап:
+ * - Google Таблица хранит рабочие листы;
+ * - лист "Настройки" хранит юрлица и WB API токены;
+ * - Apps Script ежедневно загружает вчерашние КИЗы из WB;
+ * - КИЗы движутся между листами "к выводу", "к вводу" и "архив";
+ * - отдельного HTML-интерфейса пока нет.
  */
 
 const TZ = 'Europe/Moscow';
 
 const SHEETS = {
-  settings: 'settings',
-  syncLog: 'sync_log',
-  errors: 'errors'
+  settings: 'Настройки',
+  syncLog: 'Журнал синхронизации',
+  errors: 'Ошибки'
+};
+
+const SHEET_ALIASES = {
+  'Настройки': ['settings'],
+  'Журнал синхронизации': ['sync_log'],
+  'Ошибки': ['errors']
+};
+
+const LEGACY_DATA_SHEETS = {
+  entity_1_data: 'Старые данные юрлица 1',
+  entity_2_data: 'Старые данные юрлица 2'
 };
 
 const DEFAULT_ENTITIES = [
   {
     entityId: 'entity_1',
     legalName: 'Юрлицо 1',
-    withdrawSheetName: 'entity_1_withdraw',
-    introduceSheetName: 'entity_1_introduce',
-    archiveSheetName: 'entity_1_archive'
+    withdrawSheetName: 'Юрлицо 1 - КИЗы к выводу',
+    introduceSheetName: 'Юрлицо 1 - КИЗы к вводу',
+    archiveSheetName: 'Юрлицо 1 - Архив выведенных КИЗов'
   },
   {
     entityId: 'entity_2',
     legalName: 'Юрлицо 2',
-    withdrawSheetName: 'entity_2_withdraw',
-    introduceSheetName: 'entity_2_introduce',
-    archiveSheetName: 'entity_2_archive'
+    withdrawSheetName: 'Юрлицо 2 - КИЗы к выводу',
+    introduceSheetName: 'Юрлицо 2 - КИЗы к вводу',
+    archiveSheetName: 'Юрлицо 2 - Архив выведенных КИЗов'
   }
 ];
 
-const SETTINGS_HEADERS = [
+const SETTINGS_KEYS = [
   'entityId',
   'legalName',
   'inn',
@@ -49,7 +60,22 @@ const SETTINGS_HEADERS = [
   'comment'
 ];
 
-const DATA_HEADERS = [
+const SETTINGS_HEADERS = [
+  'ID юрлица',
+  'Название юрлица',
+  'ИНН',
+  'WB API токен',
+  'Активно',
+  'Лист: КИЗы к выводу',
+  'Лист: КИЗы к вводу',
+  'Лист: архив выведенных КИЗов',
+  'Режим WB API',
+  'Последняя синхронизация',
+  'Статус последней синхронизации',
+  'Комментарий'
+];
+
+const DATA_KEYS = [
   'syncDate',
   'entityId',
   'legalName',
@@ -71,7 +97,29 @@ const DATA_HEADERS = [
   'comment'
 ];
 
-const LOG_HEADERS = [
+const DATA_HEADERS = [
+  'Дата загрузки',
+  'ID юрлица',
+  'Название юрлица',
+  'ИНН',
+  'Операция',
+  'КИЗ / SGTIN',
+  'Артикул',
+  'Баркод',
+  'ID заказа WB',
+  'SRID',
+  'Статус продавца WB',
+  'Статус WB',
+  'Дата заказа WB',
+  'Состояние строки',
+  'Источник',
+  'Создано',
+  'Обновлено',
+  'Ключ дубля',
+  'Комментарий'
+];
+
+const LOG_KEYS = [
   'startedAt',
   'finishedAt',
   'entityId',
@@ -88,7 +136,24 @@ const LOG_HEADERS = [
   'message'
 ];
 
-const ERROR_HEADERS = [
+const LOG_HEADERS = [
+  'Начало',
+  'Окончание',
+  'ID юрлица',
+  'Название юрлица',
+  'Период с',
+  'Период по',
+  'КИЗов найдено',
+  'Новых строк',
+  'Дублей',
+  'Новых к выводу',
+  'Новых к вводу',
+  'Ошибок',
+  'Статус',
+  'Сообщение'
+];
+
+const ERROR_KEYS = [
   'createdAt',
   'entityId',
   'step',
@@ -97,6 +162,53 @@ const ERROR_HEADERS = [
   'message',
   'rawResponse'
 ];
+
+const ERROR_HEADERS = [
+  'Создано',
+  'ID юрлица',
+  'Шаг',
+  'ID заказа WB',
+  'КИЗ / SGTIN',
+  'Сообщение',
+  'Сырой ответ'
+];
+
+const SETTINGS_ALIASES = {
+  entityId: ['ID юрлица', 'entityId'],
+  legalName: ['Название юрлица', 'legalName'],
+  inn: ['ИНН', 'inn'],
+  wbToken: ['WB API токен', 'wbToken'],
+  isActive: ['Активно', 'isActive'],
+  withdrawSheetName: ['Лист: КИЗы к выводу', 'withdrawSheetName'],
+  introduceSheetName: ['Лист: КИЗы к вводу', 'introduceSheetName'],
+  archiveSheetName: ['Лист: архив выведенных КИЗов', 'archiveSheetName'],
+  apiMode: ['Режим WB API', 'apiMode'],
+  lastSyncAt: ['Последняя синхронизация', 'lastSyncAt'],
+  lastSyncStatus: ['Статус последней синхронизации', 'lastSyncStatus'],
+  comment: ['Комментарий', 'comment']
+};
+
+const DATA_ALIASES = {
+  syncDate: ['Дата загрузки', 'syncDate'],
+  entityId: ['ID юрлица', 'entityId'],
+  legalName: ['Название юрлица', 'legalName'],
+  inn: ['ИНН', 'inn'],
+  operation: ['Операция', 'operation'],
+  kiz: ['КИЗ / SGTIN', 'kiz'],
+  article: ['Артикул', 'article'],
+  barcode: ['Баркод', 'barcode'],
+  orderId: ['ID заказа WB', 'orderId'],
+  srid: ['SRID', 'srid'],
+  supplierStatus: ['Статус продавца WB', 'supplierStatus'],
+  wbStatus: ['Статус WB', 'wbStatus'],
+  wbDate: ['Дата заказа WB', 'wbDate'],
+  status: ['Состояние строки', 'status'],
+  source: ['Источник', 'source'],
+  createdAt: ['Создано', 'createdAt'],
+  updatedAt: ['Обновлено', 'updatedAt'],
+  dedupeKey: ['Ключ дубля', 'dedupeKey'],
+  comment: ['Комментарий', 'comment']
+};
 
 function onOpen() {
   SpreadsheetApp.getUi()
@@ -114,6 +226,7 @@ function setupWorkbook() {
 }
 
 function setupWorkbook_() {
+  renameLegacyDataSheets_();
   const entities = ensureSettingsSheet_();
   entities.forEach(entity => {
     ensureSheet_(entity.withdrawSheetName, DATA_HEADERS, []);
@@ -135,8 +248,8 @@ function syncYesterdayAllEntities(showToast) {
   const entities = readSettings_().filter(entity => entity.isActive);
 
   if (!entities.length) {
-    if (shouldToast) SpreadsheetApp.getActive().toast('Нет активных юрлиц в settings', 'WB КИЗы', 8);
-    throw new Error('Нет активных юрлиц в settings');
+    if (shouldToast) SpreadsheetApp.getActive().toast('Нет активных юрлиц на листе Настройки', 'WB КИЗы', 8);
+    throw new Error('Нет активных юрлиц на листе Настройки');
   }
 
   if (shouldToast) {
@@ -153,7 +266,7 @@ function syncYesterdayAllEntities(showToast) {
     const withdrawRows = results.reduce((sum, result) => sum + result.withdrawNewRows, 0);
     const introduceRows = results.reduce((sum, result) => sum + result.introduceNewRows, 0);
     SpreadsheetApp.getActive().toast(
-      'Готово: ' + ok + ' OK / ' + errors + ' ошибок · к выводу: ' + withdrawRows + ' · к вводу: ' + introduceRows + ' · дублей: ' + duplicateRows,
+      'Готово: успешно ' + ok + ' / ошибок ' + errors + ' · к выводу: ' + withdrawRows + ' · к вводу: ' + introduceRows + ' · дублей: ' + duplicateRows,
       'WB КИЗы',
       12
     );
@@ -209,13 +322,13 @@ function syncEntity_(entity, period) {
     duplicateRows = result.duplicateRows;
     withdrawNewRows = result.withdrawNewRows;
     introduceNewRows = result.introduceNewRows;
-    updateSettingsSyncStatus_(entity.entityId, 'OK withdraw ' + withdrawNewRows + ' / introduce ' + introduceNewRows + ' / duplicates ' + duplicateRows);
+    updateSettingsSyncStatus_(entity.entityId, 'Успешно: к выводу ' + withdrawNewRows + ', к вводу ' + introduceNewRows + ', дублей ' + duplicateRows);
   } catch (err) {
     status = 'ERROR';
     errorCount = 1;
     message = err && err.message ? err.message : String(err);
     appendError_(entity.entityId, 'syncEntity', '', '', message, err && err.stack ? err.stack : '');
-    updateSettingsSyncStatus_(entity.entityId, 'ERROR ' + message.slice(0, 150));
+    updateSettingsSyncStatus_(entity.entityId, 'Ошибка: ' + message.slice(0, 150));
   } finally {
     appendLog_({
       startedAt,
@@ -254,9 +367,9 @@ function validateEntity_(entity) {
   if (!entity.legalName) throw new Error(entity.entityId + ': legalName пустой');
   if (!entity.inn) throw new Error(entity.entityId + ': inn пустой');
   if (!entity.wbToken) throw new Error(entity.entityId + ': wbToken пустой');
-  if (!entity.withdrawSheetName) throw new Error(entity.entityId + ': withdrawSheetName пустой');
-  if (!entity.introduceSheetName) throw new Error(entity.entityId + ': introduceSheetName пустой');
-  if (!entity.archiveSheetName) throw new Error(entity.entityId + ': archiveSheetName пустой');
+  if (!entity.withdrawSheetName) throw new Error(entity.entityId + ': не указан лист для КИЗов к выводу');
+  if (!entity.introduceSheetName) throw new Error(entity.entityId + ': не указан лист для КИЗов к вводу');
+  if (!entity.archiveSheetName) throw new Error(entity.entityId + ': не указан лист архива');
 }
 
 function fetchWbKizRows_(entity, period) {
@@ -560,7 +673,7 @@ function appendNewDataRows_(entity, rows) {
         return;
       }
       withdrawKeys.add(row.dedupeKey);
-      withdrawValues.push(DATA_HEADERS.map(header => row[header] == null ? '' : row[header]));
+      withdrawValues.push(dataValues_(row));
       return;
     }
 
@@ -574,7 +687,7 @@ function appendNewDataRows_(entity, rows) {
         return;
       }
       introduceKeys.add(row.dedupeKey);
-      introduceValues.push(DATA_HEADERS.map(header => row[header] == null ? '' : row[header]));
+      introduceValues.push(dataValues_(row));
       return;
     }
 
@@ -611,7 +724,7 @@ function confirmWithdrawDone(entityId) {
     row.status = 'archived';
     row.updatedAt = timestamp;
     archiveKeys.add(row.dedupeKey);
-    archiveValues.push(DATA_HEADERS.map(header => row[header] == null ? '' : row[header]));
+    archiveValues.push(dataValues_(row));
   });
 
   appendValues_(archiveSheet, archiveValues);
@@ -644,7 +757,7 @@ function readDataObjects_(sheet) {
   const headers = values[0].map(String);
   return values.slice(1)
     .filter(row => row.some(cell => cell !== ''))
-    .map(row => objectFromRow_(headers, row));
+    .map(row => objectFromRowWithAliases_(headers, row, DATA_ALIASES));
 }
 
 function clearDataRows_(sheet) {
@@ -658,7 +771,7 @@ function removeArchiveKiz_(sheet, introducedKiz) {
   const values = sheet.getDataRange().getValues();
   if (values.length < 2) return 0;
   const headers = values[0].map(String);
-  const kizIndex = headers.indexOf('kiz');
+  const kizIndex = findColumnIndex_(headers, DATA_ALIASES.kiz);
   if (kizIndex === -1) return 0;
 
   const keptRows = [];
@@ -683,7 +796,7 @@ function readExistingKizKeys_(sheet) {
   const values = sheet.getDataRange().getValues();
   if (values.length < 2) return new Set();
   const headers = values[0].map(String);
-  const kizIndex = headers.indexOf('kiz');
+  const kizIndex = findColumnIndex_(headers, DATA_ALIASES.kiz);
   if (kizIndex === -1) return new Set();
   return new Set(values.slice(1).map(row => String(row[kizIndex] || '')).filter(Boolean));
 }
@@ -696,14 +809,14 @@ function getEntityById_(entityId) {
 
 function ensureSettingsSheet_() {
   const ss = SpreadsheetApp.getActive();
-  let sheet = ss.getSheetByName(SHEETS.settings);
+  let sheet = getSheetByNameOrAlias_(SHEETS.settings);
   if (!sheet) {
     sheet = ss.insertSheet(SHEETS.settings);
   }
   const values = sheet.getDataRange().getValues();
   const oldHeaders = values.length ? values[0].map(String) : [];
   const oldRows = values.length > 1
-    ? values.slice(1).filter(row => row.some(cell => cell !== '')).map(row => objectFromRow_(oldHeaders, row))
+    ? values.slice(1).filter(row => row.some(cell => cell !== '')).map(row => objectFromRowWithAliases_(oldHeaders, row, SETTINGS_ALIASES))
     : [];
   const rowsById = {};
   oldRows.forEach(row => {
@@ -739,9 +852,9 @@ function ensureSettingsSheet_() {
       inn: row.inn || '',
       wbToken: row.wbToken || '',
       isActive: row.isActive == null || row.isActive === '' ? 'TRUE' : row.isActive,
-      withdrawSheetName: row.withdrawSheetName || entityId + '_withdraw',
-      introduceSheetName: row.introduceSheetName || entityId + '_introduce',
-      archiveSheetName: row.archiveSheetName || entityId + '_archive',
+      withdrawSheetName: row.withdrawSheetName || (row.legalName || entityId) + ' - КИЗы к выводу',
+      introduceSheetName: row.introduceSheetName || (row.legalName || entityId) + ' - КИЗы к вводу',
+      archiveSheetName: row.archiveSheetName || (row.legalName || entityId) + ' - Архив выведенных КИЗов',
       apiMode: row.apiMode || 'fbs',
       lastSyncAt: row.lastSyncAt || '',
       lastSyncStatus: row.lastSyncStatus || '',
@@ -755,7 +868,7 @@ function ensureSettingsSheet_() {
   sheet.getRange(1, 1, 1, SETTINGS_HEADERS.length).setFontWeight('bold').setBackground('#eeeeee');
   if (seedRows.length) {
     sheet.getRange(2, 1, seedRows.length, SETTINGS_HEADERS.length)
-      .setValues(seedRows.map(row => SETTINGS_HEADERS.map(header => row[header] == null ? '' : row[header])));
+      .setValues(seedRows.map(row => settingsValues_(row)));
   }
 
   return seedRows.map(row => ({
@@ -763,7 +876,7 @@ function ensureSettingsSheet_() {
     legalName: String(row.legalName || '').trim(),
     inn: String(row.inn || '').trim(),
     wbToken: String(row.wbToken || '').trim(),
-    isActive: String(row.isActive).toUpperCase() !== 'FALSE',
+    isActive: parseActiveValue_(row.isActive),
     withdrawSheetName: String(row.withdrawSheetName || '').trim(),
     introduceSheetName: String(row.introduceSheetName || '').trim(),
     archiveSheetName: String(row.archiveSheetName || '').trim(),
@@ -775,7 +888,7 @@ function readExistingKeys_(sheet) {
   const values = sheet.getDataRange().getValues();
   if (values.length < 2) return new Set();
   const headers = values[0].map(String);
-  const keyIndex = headers.indexOf('dedupeKey');
+  const keyIndex = findColumnIndex_(headers, DATA_ALIASES.dedupeKey);
   if (keyIndex === -1) return new Set();
   return new Set(values.slice(1).map(row => String(row[keyIndex] || '')).filter(Boolean));
 }
@@ -787,16 +900,16 @@ function readSettings_() {
   const headers = values[0].map(String);
   return values.slice(1)
     .filter(row => row.some(cell => cell !== ''))
-    .map(row => objectFromRow_(headers, row))
+    .map(row => objectFromRowWithAliases_(headers, row, SETTINGS_ALIASES))
     .map(row => ({
       entityId: String(row.entityId || '').trim(),
       legalName: String(row.legalName || '').trim(),
       inn: String(row.inn || '').trim(),
       wbToken: String(row.wbToken || '').trim(),
-      isActive: String(row.isActive).toUpperCase() !== 'FALSE',
-      withdrawSheetName: String(row.withdrawSheetName || row.entityId + '_withdraw').trim(),
-      introduceSheetName: String(row.introduceSheetName || row.entityId + '_introduce').trim(),
-      archiveSheetName: String(row.archiveSheetName || row.entityId + '_archive').trim(),
+      isActive: parseActiveValue_(row.isActive),
+      withdrawSheetName: String(row.withdrawSheetName || row.legalName + ' - КИЗы к выводу').trim(),
+      introduceSheetName: String(row.introduceSheetName || row.legalName + ' - КИЗы к вводу').trim(),
+      archiveSheetName: String(row.archiveSheetName || row.legalName + ' - Архив выведенных КИЗов').trim(),
       apiMode: String(row.apiMode || 'auto').trim() || 'auto'
     }));
 }
@@ -805,9 +918,9 @@ function updateSettingsSyncStatus_(entityId, statusText) {
   const sheet = getOrCreateSheet_(SHEETS.settings, SETTINGS_HEADERS);
   const values = sheet.getDataRange().getValues();
   const headers = values[0].map(String);
-  const entityIndex = headers.indexOf('entityId');
-  const lastSyncAtIndex = headers.indexOf('lastSyncAt');
-  const lastSyncStatusIndex = headers.indexOf('lastSyncStatus');
+  const entityIndex = findColumnIndex_(headers, SETTINGS_ALIASES.entityId);
+  const lastSyncAtIndex = findColumnIndex_(headers, SETTINGS_ALIASES.lastSyncAt);
+  const lastSyncStatusIndex = findColumnIndex_(headers, SETTINGS_ALIASES.lastSyncStatus);
 
   for (let i = 1; i < values.length; i++) {
     if (String(values[i][entityIndex]) !== entityId) continue;
@@ -819,20 +932,21 @@ function updateSettingsSyncStatus_(entityId, statusText) {
 
 function appendLog_(log) {
   const sheet = getOrCreateSheet_(SHEETS.syncLog, LOG_HEADERS);
-  sheet.appendRow(LOG_HEADERS.map(header => log[header] == null ? '' : log[header]));
+  sheet.appendRow(LOG_KEYS.map(key => displayLogValue_(key, log[key])));
 }
 
 function appendError_(entityId, step, orderId, kiz, message, rawResponse) {
   const sheet = getOrCreateSheet_(SHEETS.errors, ERROR_HEADERS);
-  sheet.appendRow([
-    now_(),
+  const errorRow = {
+    createdAt: now_(),
     entityId,
-    step,
+    step: displayErrorStep_(step),
     orderId,
     kiz,
     message,
     rawResponse
-  ]);
+  };
+  sheet.appendRow(ERROR_KEYS.map(key => errorRow[key] == null ? '' : errorRow[key]));
 }
 
 function getYesterdayPeriod_() {
@@ -863,7 +977,7 @@ function ensureSheet_(name, headers, seedRows) {
 
 function getOrCreateSheet_(name, headers) {
   const ss = SpreadsheetApp.getActive();
-  let sheet = ss.getSheetByName(name);
+  let sheet = getSheetByNameOrAlias_(name);
   if (!sheet) {
     sheet = ss.insertSheet(name);
   }
@@ -877,10 +991,113 @@ function getOrCreateSheet_(name, headers) {
   return sheet;
 }
 
-function objectFromRow_(headers, row) {
+function getSheetByNameOrAlias_(name) {
+  const ss = SpreadsheetApp.getActive();
+  let sheet = ss.getSheetByName(name);
+  if (sheet) return sheet;
+
+  const aliases = SHEET_ALIASES[name] || [];
+  for (let i = 0; i < aliases.length; i++) {
+    sheet = ss.getSheetByName(aliases[i]);
+    if (!sheet) continue;
+    sheet.setName(name);
+    return sheet;
+  }
+  return null;
+}
+
+function renameLegacyDataSheets_() {
+  const ss = SpreadsheetApp.getActive();
+  Object.keys(LEGACY_DATA_SHEETS).forEach(oldName => {
+    const newName = LEGACY_DATA_SHEETS[oldName];
+    const oldSheet = ss.getSheetByName(oldName);
+    if (!oldSheet || ss.getSheetByName(newName)) return;
+    oldSheet.setName(newName);
+  });
+}
+
+function settingsValues_(row) {
+  return SETTINGS_KEYS.map(key => {
+    if (key === 'isActive') return parseActiveValue_(row[key]) ? 'Да' : 'Нет';
+    return row[key] == null ? '' : row[key];
+  });
+}
+
+function dataValues_(row) {
+  return DATA_KEYS.map(key => displayDataValue_(key, row[key]));
+}
+
+function displayDataValue_(key, value) {
+  if (value == null) return '';
+  if (key === 'operation') return displayOperation_(value);
+  if (key === 'status') return displayRowStatus_(value);
+  if (key === 'source') return displaySource_(value);
+  return value;
+}
+
+function displayOperation_(value) {
+  const raw = String(value || '').toLowerCase();
+  if (raw === 'withdraw') return 'К выводу из оборота';
+  if (raw === 'introduce') return 'К вводу обратно в оборот';
+  if (raw === 'skip') return 'Пропустить';
+  return value;
+}
+
+function displayRowStatus_(value) {
+  const raw = String(value || '').toLowerCase();
+  if (raw === 'new') return 'Новая строка';
+  if (raw === 'archived') return 'В архиве';
+  return value;
+}
+
+function displaySource_(value) {
+  const raw = String(value || '').toLowerCase();
+  if (raw === 'fbs') return 'FBS';
+  if (raw === 'dbs') return 'DBS';
+  if (raw === 'dbw') return 'DBW';
+  return value;
+}
+
+function displayLogValue_(key, value) {
+  if (value == null) return '';
+  if (key === 'status') {
+    if (value === 'OK') return 'Успешно';
+    if (value === 'ERROR') return 'Ошибка';
+  }
+  return value;
+}
+
+function displayErrorStep_(step) {
+  const raw = String(step || '');
+  if (raw === 'syncEntity') return 'Синхронизация юрлица';
+  if (raw.indexOf('orderWithoutStatus:') === 0) return 'Заказ без статуса WB (' + raw.split(':')[1].toUpperCase() + ')';
+  if (raw.indexOf('orderWithoutSgtin:') === 0) return 'Заказ без КИЗа в metadata (' + raw.split(':')[1].toUpperCase() + ')';
+  if (raw.indexOf('fetchCompletedOrders:') === 0) return 'Загрузка заказов WB (' + raw.split(':')[1].toUpperCase() + ')';
+  if (raw.indexOf('fetchOrdersStatusBulk:') === 0) return 'Загрузка статусов WB (' + raw.split(':')[1].toUpperCase() + ')';
+  if (raw.indexOf('fetchOrdersMetaBulk:') === 0) return 'Загрузка КИЗов WB (' + raw.split(':')[1].toUpperCase() + ')';
+  if (raw === 'introduceWithoutArchive') return 'КИЗ к вводу не найден в архиве';
+  return raw;
+}
+
+function parseActiveValue_(value) {
+  const raw = String(value == null ? '' : value).trim().toLowerCase();
+  if (raw === 'нет' || raw === 'false' || raw === '0' || raw === 'no') return false;
+  return true;
+}
+
+function findColumnIndex_(headers, aliases) {
+  for (let i = 0; i < aliases.length; i++) {
+    const index = headers.indexOf(aliases[i]);
+    if (index !== -1) return index;
+  }
+  return -1;
+}
+
+function objectFromRowWithAliases_(headers, row, aliasesByKey) {
   const out = {};
-  headers.forEach((header, index) => {
-    out[header] = row[index];
+  Object.keys(aliasesByKey).forEach(key => {
+    const index = findColumnIndex_(headers, aliasesByKey[key]);
+    out[key] = index === -1 ? '' : row[index];
   });
   return out;
 }
