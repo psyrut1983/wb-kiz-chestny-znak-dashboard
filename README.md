@@ -22,7 +22,23 @@ https://docs.google.com/spreadsheets/d/1Ol0SdvkxilSx5wnjwiUqWjDL6lpzWU8bGR5-xERW
 ## Логика
 
 - `settings` хранит настройки двух юрлиц.
-- `entity_1_data` и `entity_2_data` хранят нормализованные КИЗы.
+- Для каждого юрлица создаются три листа:
+  - `<entity>_withdraw` — КИЗы к выводу из оборота;
+  - `<entity>_introduce` — КИЗы к вводу обратно в оборот;
+  - `<entity>_archive` — КИЗы, которые уже выведены из оборота.
 - `sync_log` хранит историю запусков.
 - `errors` хранит ошибки WB/API/обработки.
 - Дубли отсекаются по `entityId + operation + kiz + orderId`.
+- Для FBS скрипт получает статусы через `POST /api/v3/orders/status`.
+- КИЗы берутся из metadata через `POST /api/marketplace/v3/orders/meta`.
+- `wbStatus = canceled_by_client` попадает во ввод обратно в оборот.
+- КИЗ к вводу обратно добавляется только если он уже есть в архиве.
+- Отмены продавца, отмены в первый час и брак пропускаются.
+- Остальные заказы с найденным `sgtin` попадают в вывод из оборота, если этот КИЗ ещё не лежит в архиве.
+
+## Будущий HTML
+
+HTML-панель должна вызывать серверные функции Apps Script:
+
+- `confirmWithdrawDone(entityId)` — после ручного вывода в Честном знаке переносит строки из `<entity>_withdraw` в `<entity>_archive`.
+- `confirmIntroduceDone(entityId)` — после ручного ввода обратно очищает `<entity>_introduce` и удаляет эти КИЗы из `<entity>_archive`.

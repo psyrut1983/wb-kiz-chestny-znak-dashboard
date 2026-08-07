@@ -5,7 +5,7 @@
  * - one Google Sheet is the database;
  * - settings contains two legal entities and WB tokens;
  * - Apps Script loads yesterday's WB marking codes every day;
- * - data is written into separate entity tabs;
+ * - KIZ rows move through withdraw, introduce and archive tabs per entity;
  * - no HTML/UI here.
  */
 
@@ -13,11 +13,26 @@ const TZ = 'Europe/Moscow';
 
 const SHEETS = {
   settings: 'settings',
-  entity1: 'entity_1_data',
-  entity2: 'entity_2_data',
   syncLog: 'sync_log',
   errors: 'errors'
 };
+
+const DEFAULT_ENTITIES = [
+  {
+    entityId: 'entity_1',
+    legalName: 'Юрлицо 1',
+    withdrawSheetName: 'entity_1_withdraw',
+    introduceSheetName: 'entity_1_introduce',
+    archiveSheetName: 'entity_1_archive'
+  },
+  {
+    entityId: 'entity_2',
+    legalName: 'Юрлицо 2',
+    withdrawSheetName: 'entity_2_withdraw',
+    introduceSheetName: 'entity_2_introduce',
+    archiveSheetName: 'entity_2_archive'
+  }
+];
 
 const SETTINGS_HEADERS = [
   'entityId',
@@ -25,7 +40,9 @@ const SETTINGS_HEADERS = [
   'inn',
   'wbToken',
   'isActive',
-  'dataSheetName',
+  'withdrawSheetName',
+  'introduceSheetName',
+  'archiveSheetName',
   'apiMode',
   'lastSyncAt',
   'lastSyncStatus',
@@ -43,6 +60,7 @@ const DATA_HEADERS = [
   'barcode',
   'orderId',
   'srid',
+  'supplierStatus',
   'wbStatus',
   'wbDate',
   'status',
@@ -63,6 +81,8 @@ const LOG_HEADERS = [
   'rowsLoaded',
   'newRows',
   'duplicateRows',
+  'withdrawNewRows',
+  'introduceNewRows',
   'errors',
   'status',
   'message'
@@ -94,12 +114,12 @@ function setupWorkbook() {
 }
 
 function setupWorkbook_() {
-  ensureSheet_(SHEETS.settings, SETTINGS_HEADERS, [
-    ['entity_1', 'Юрлицо 1', '', '', 'TRUE', SHEETS.entity1, 'fbs', '', '', ''],
-    ['entity_2', 'Юрлицо 2', '', '', 'TRUE', SHEETS.entity2, 'fbs', '', '', '']
-  ]);
-  ensureSheet_(SHEETS.entity1, DATA_HEADERS, []);
-  ensureSheet_(SHEETS.entity2, DATA_HEADERS, []);
+  const entities = ensureSettingsSheet_();
+  entities.forEach(entity => {
+    ensureSheet_(entity.withdrawSheetName, DATA_HEADERS, []);
+    ensureSheet_(entity.introduceSheetName, DATA_HEADERS, []);
+    ensureSheet_(entity.archiveSheetName, DATA_HEADERS, []);
+  });
   ensureSheet_(SHEETS.syncLog, LOG_HEADERS, []);
   ensureSheet_(SHEETS.errors, ERROR_HEADERS, []);
 }
@@ -130,8 +150,10 @@ function syncYesterdayAllEntities(showToast) {
     const errors = results.length - ok;
     const newRows = results.reduce((sum, result) => sum + result.newRows, 0);
     const duplicateRows = results.reduce((sum, result) => sum + result.duplicateRows, 0);
+    const withdrawRows = results.reduce((sum, result) => sum + result.withdrawNewRows, 0);
+    const introduceRows = results.reduce((sum, result) => sum + result.introduceNewRows, 0);
     SpreadsheetApp.getActive().toast(
-      'Готово: ' + ok + ' OK / ' + errors + ' ошибок · новых КИЗов: ' + newRows + ' · дублей: ' + duplicateRows,
+      'Готово: ' + ok + ' OK / ' + errors + ' ошибок · к выводу: ' + withdrawRows + ' · к вводу: ' + introduceRows + ' · дублей: ' + duplicateRows,
       'WB КИЗы',
       12
     );
@@ -172,6 +194,8 @@ function syncEntity_(entity, period) {
   let rowsLoaded = 0;
   let newRows = 0;
   let duplicateRows = 0;
+  let withdrawNewRows = 0;
+  let introduceNewRows = 0;
   let errorCount = 0;
   let status = 'OK';
   let message = '';
@@ -183,7 +207,9 @@ function syncEntity_(entity, period) {
     const result = appendNewDataRows_(entity, loadedRows);
     newRows = result.newRows;
     duplicateRows = result.duplicateRows;
-    updateSettingsSyncStatus_(entity.entityId, 'OK ' + newRows + ' new / ' + duplicateRows + ' duplicates');
+    withdrawNewRows = result.withdrawNewRows;
+    introduceNewRows = result.introduceNewRows;
+    updateSettingsSyncStatus_(entity.entityId, 'OK withdraw ' + withdrawNewRows + ' / introduce ' + introduceNewRows + ' / duplicates ' + duplicateRows);
   } catch (err) {
     status = 'ERROR';
     errorCount = 1;
@@ -201,6 +227,8 @@ function syncEntity_(entity, period) {
       rowsLoaded,
       newRows,
       duplicateRows,
+      withdrawNewRows,
+      introduceNewRows,
       errors: errorCount,
       status,
       message
@@ -213,6 +241,8 @@ function syncEntity_(entity, period) {
     rowsLoaded,
     newRows,
     duplicateRows,
+    withdrawNewRows,
+    introduceNewRows,
     errors: errorCount,
     status,
     message
@@ -224,7 +254,9 @@ function validateEntity_(entity) {
   if (!entity.legalName) throw new Error(entity.entityId + ': legalName пустой');
   if (!entity.inn) throw new Error(entity.entityId + ': inn пустой');
   if (!entity.wbToken) throw new Error(entity.entityId + ': wbToken пустой');
-  if (!entity.dataSheetName) throw new Error(entity.entityId + ': dataSheetName пустой');
+  if (!entity.withdrawSheetName) throw new Error(entity.entityId + ': withdrawSheetName пустой');
+  if (!entity.introduceSheetName) throw new Error(entity.entityId + ': introduceSheetName пустой');
+  if (!entity.archiveSheetName) throw new Error(entity.entityId + ': archiveSheetName пустой');
 }
 
 function fetchWbKizRows_(entity, period) {
@@ -240,10 +272,18 @@ function fetchWbKizRows_(entity, period) {
       const orders = fetchCompletedOrders_(mode, entity.wbToken, period)
         .filter(order => isOrderInsidePeriod_(order, period));
       const metaMap = fetchOrderMetaMap_(mode, entity.wbToken, orders, entity.entityId);
+      const statusMap = fetchOrderStatusMap_(mode, entity.wbToken, orders, entity.entityId);
 
       orders.forEach(order => {
         const orderId = getOrderId_(order);
         if (!orderId) return;
+        const statusInfo = statusMap[String(orderId)] || {};
+        if (mode === 'fbs' && !statusInfo.id && !statusInfo.orderId && !statusInfo.orderID) {
+          appendError_(entity.entityId, 'orderWithoutStatus:' + mode, String(orderId), '', 'WB не вернул статус заказа', JSON.stringify(order).slice(0, 3000));
+          return;
+        }
+        const operation = classifyOperation_(order, statusInfo);
+        if (operation === 'skip') return;
 
         const kizList = metaMap[String(orderId)] || [];
         if (!kizList.length) {
@@ -252,7 +292,7 @@ function fetchWbKizRows_(entity, period) {
         }
 
         kizList.forEach(kiz => {
-          rows.push(normalizeKizRow_(entity, mode, order, kiz, period));
+          rows.push(normalizeKizRow_(entity, mode, order, statusInfo, operation, kiz, period));
         });
       });
     } catch (err) {
@@ -266,6 +306,36 @@ function fetchWbKizRows_(entity, period) {
   }
 
   return rows;
+}
+
+function fetchOrderStatusMap_(mode, token, orders, entityId) {
+  if (!orders.length) return {};
+  if (mode !== 'fbs') return {};
+
+  const out = {};
+  const errors = [];
+  const orderIds = orders.map(getOrderId_).filter(Boolean);
+  chunk_(orderIds, 100).forEach(ids => {
+    try {
+      const response = wbPostJson_(
+        'https://marketplace-api.wildberries.ru/api/v3/orders/status',
+        token,
+        { orders: ids.map(Number) }
+      );
+      extractBulkStatusItems_(response).forEach(item => {
+        const id = String(item.id || item.orderId || item.orderID || '');
+        if (!id) return;
+        out[id] = item;
+      });
+    } catch (err) {
+      errors.push(err.message);
+      appendError_(entityId, 'fetchOrdersStatusBulk:' + mode, ids.join(','), '', err.message, '');
+    }
+  });
+  if (errors.length) {
+    throw new Error('WB не вернул статусы заказов: ' + errors.join(' | '));
+  }
+  return out;
 }
 
 function fetchOrderMetaMap_(mode, token, orders, entityId) {
@@ -339,13 +409,13 @@ function wbPostJson_(url, token, payload) {
   return body ? JSON.parse(body) : {};
 }
 
-function normalizeKizRow_(entity, sourceMode, order, kiz, period) {
-  const operation = detectOperation_(order);
+function normalizeKizRow_(entity, sourceMode, order, statusInfo, operation, kiz, period) {
   const orderId = String(getOrderId_(order) || '');
   const srid = String(order.srid || '');
   const article = String(order.article || order.articleVendorCode || order.vendorCode || order.nmId || '');
   const barcode = firstBarcode_(order);
-  const wbStatus = String(order.status || order.wbStatus || order.state || '');
+  const supplierStatus = String(statusInfo.supplierStatus || order.supplierStatus || '');
+  const wbStatus = String(statusInfo.wbStatus || order.wbStatus || order.status || order.state || '');
   const wbDate = String(order.createdAt || order.convertedAt || order.date || order.updatedAt || '');
   const dedupeKey = [entity.entityId, operation, kiz, orderId].join('|');
   const timestamp = now_();
@@ -361,6 +431,7 @@ function normalizeKizRow_(entity, sourceMode, order, kiz, period) {
     barcode,
     orderId,
     srid,
+    supplierStatus,
     wbStatus,
     wbDate,
     status: 'new',
@@ -372,18 +443,23 @@ function normalizeKizRow_(entity, sourceMode, order, kiz, period) {
   };
 }
 
-function detectOperation_(order) {
-  const hay = JSON.stringify(order).toLowerCase();
-  if (
-    hay.indexOf('reject') !== -1 ||
-    hay.indexOf('declin') !== -1 ||
-    hay.indexOf('cancel') !== -1 ||
-    hay.indexOf('return') !== -1 ||
-    hay.indexOf('отказ') !== -1 ||
-    hay.indexOf('возврат') !== -1
-  ) {
+function classifyOperation_(order, statusInfo) {
+  const supplierStatus = String(statusInfo.supplierStatus || order.supplierStatus || '').toLowerCase();
+  const wbStatus = String(statusInfo.wbStatus || order.wbStatus || order.status || order.state || '').toLowerCase();
+
+  if (wbStatus === 'canceled_by_client') {
     return 'introduce';
   }
+
+  if (
+    supplierStatus === 'cancel' ||
+    wbStatus === 'canceled' ||
+    wbStatus === 'declined_by_client' ||
+    wbStatus === 'defect'
+  ) {
+    return 'skip';
+  }
+
   return 'withdraw';
 }
 
@@ -412,6 +488,15 @@ function extractSgtins_(metaResponse) {
 }
 
 function extractBulkMetaItems_(response) {
+  if (Array.isArray(response)) return response;
+  if (Array.isArray(response.orders)) return response.orders;
+  if (Array.isArray(response.data)) return response.data;
+  if (Array.isArray(response.items)) return response.items;
+  if (Array.isArray(response.result)) return response.result;
+  return [];
+}
+
+function extractBulkStatusItems_(response) {
   if (Array.isArray(response)) return response;
   if (Array.isArray(response.orders)) return response.orders;
   if (Array.isArray(response.data)) return response.data;
@@ -457,25 +542,233 @@ function unique_(items) {
 }
 
 function appendNewDataRows_(entity, rows) {
-  const sheet = getOrCreateSheet_(entity.dataSheetName, DATA_HEADERS);
-  const existingKeys = readExistingKeys_(sheet);
-  const newValues = [];
+  const withdrawSheet = getOrCreateSheet_(entity.withdrawSheetName, DATA_HEADERS);
+  const introduceSheet = getOrCreateSheet_(entity.introduceSheetName, DATA_HEADERS);
+  const archiveSheet = getOrCreateSheet_(entity.archiveSheetName, DATA_HEADERS);
+  const withdrawKeys = readExistingKeys_(withdrawSheet);
+  const introduceKeys = readExistingKeys_(introduceSheet);
+  const archiveKizKeys = readExistingKizKeys_(archiveSheet);
+  const introduceKizKeys = readExistingKizKeys_(introduceSheet);
+  const withdrawValues = [];
+  const introduceValues = [];
   let duplicateRows = 0;
 
   rows.forEach(row => {
-    if (existingKeys.has(row.dedupeKey)) {
-      duplicateRows += 1;
+    if (row.operation === 'withdraw') {
+      if (withdrawKeys.has(row.dedupeKey) || archiveKizKeys.has(row.kiz) || introduceKizKeys.has(row.kiz)) {
+        duplicateRows += 1;
+        return;
+      }
+      withdrawKeys.add(row.dedupeKey);
+      withdrawValues.push(DATA_HEADERS.map(header => row[header] == null ? '' : row[header]));
       return;
     }
-    existingKeys.add(row.dedupeKey);
-    newValues.push(DATA_HEADERS.map(header => row[header] == null ? '' : row[header]));
+
+    if (row.operation === 'introduce') {
+      if (!archiveKizKeys.has(row.kiz)) {
+        appendError_(entity.entityId, 'introduceWithoutArchive', row.orderId, row.kiz, 'КИЗ к вводу обратно не найден в архиве', '');
+        return;
+      }
+      if (introduceKeys.has(row.dedupeKey)) {
+        duplicateRows += 1;
+        return;
+      }
+      introduceKeys.add(row.dedupeKey);
+      introduceValues.push(DATA_HEADERS.map(header => row[header] == null ? '' : row[header]));
+      return;
+    }
+
+    if (row.operation === 'skip') {
+      return;
+    }
+
+    duplicateRows += 1;
   });
 
-  if (newValues.length) {
-    sheet.getRange(sheet.getLastRow() + 1, 1, newValues.length, DATA_HEADERS.length).setValues(newValues);
+  appendValues_(withdrawSheet, withdrawValues);
+  appendValues_(introduceSheet, introduceValues);
+
+  return {
+    newRows: withdrawValues.length + introduceValues.length,
+    duplicateRows,
+    withdrawNewRows: withdrawValues.length,
+    introduceNewRows: introduceValues.length
+  };
+}
+
+function confirmWithdrawDone(entityId) {
+  setupWorkbook_();
+  const entity = getEntityById_(entityId);
+  const withdrawSheet = getOrCreateSheet_(entity.withdrawSheetName, DATA_HEADERS);
+  const archiveSheet = getOrCreateSheet_(entity.archiveSheetName, DATA_HEADERS);
+  const rows = readDataObjects_(withdrawSheet);
+  const archiveKeys = readExistingKeys_(archiveSheet);
+  const archiveValues = [];
+  const timestamp = now_();
+
+  rows.forEach(row => {
+    if (archiveKeys.has(row.dedupeKey)) return;
+    row.status = 'archived';
+    row.updatedAt = timestamp;
+    archiveKeys.add(row.dedupeKey);
+    archiveValues.push(DATA_HEADERS.map(header => row[header] == null ? '' : row[header]));
+  });
+
+  appendValues_(archiveSheet, archiveValues);
+  clearDataRows_(withdrawSheet);
+  SpreadsheetApp.getActive().toast('Выведенные КИЗы перенесены в архив: ' + archiveValues.length, 'WB КИЗы', 8);
+  return archiveValues.length;
+}
+
+function confirmIntroduceDone(entityId) {
+  setupWorkbook_();
+  const entity = getEntityById_(entityId);
+  const introduceSheet = getOrCreateSheet_(entity.introduceSheetName, DATA_HEADERS);
+  const archiveSheet = getOrCreateSheet_(entity.archiveSheetName, DATA_HEADERS);
+  const introduceRows = readDataObjects_(introduceSheet);
+  const introducedKiz = new Set(introduceRows.map(row => String(row.kiz || '')).filter(Boolean));
+  const removed = removeArchiveKiz_(archiveSheet, introducedKiz);
+  clearDataRows_(introduceSheet);
+  SpreadsheetApp.getActive().toast('КИЗы введены обратно: ' + introduceRows.length + ' · удалено из архива: ' + removed, 'WB КИЗы', 8);
+  return { introduced: introduceRows.length, removedFromArchive: removed };
+}
+
+function appendValues_(sheet, values) {
+  if (!values.length) return;
+  sheet.getRange(sheet.getLastRow() + 1, 1, values.length, DATA_HEADERS.length).setValues(values);
+}
+
+function readDataObjects_(sheet) {
+  const values = sheet.getDataRange().getValues();
+  if (values.length < 2) return [];
+  const headers = values[0].map(String);
+  return values.slice(1)
+    .filter(row => row.some(cell => cell !== ''))
+    .map(row => objectFromRow_(headers, row));
+}
+
+function clearDataRows_(sheet) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return;
+  sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).clearContent();
+}
+
+function removeArchiveKiz_(sheet, introducedKiz) {
+  if (!introducedKiz.size) return 0;
+  const values = sheet.getDataRange().getValues();
+  if (values.length < 2) return 0;
+  const headers = values[0].map(String);
+  const kizIndex = headers.indexOf('kiz');
+  if (kizIndex === -1) return 0;
+
+  const keptRows = [];
+  let removed = 0;
+  values.slice(1).forEach(row => {
+    const kiz = String(row[kizIndex] || '');
+    if (introducedKiz.has(kiz)) {
+      removed += 1;
+      return;
+    }
+    keptRows.push(row);
+  });
+
+  clearDataRows_(sheet);
+  if (keptRows.length) {
+    sheet.getRange(2, 1, keptRows.length, headers.length).setValues(keptRows);
+  }
+  return removed;
+}
+
+function readExistingKizKeys_(sheet) {
+  const values = sheet.getDataRange().getValues();
+  if (values.length < 2) return new Set();
+  const headers = values[0].map(String);
+  const kizIndex = headers.indexOf('kiz');
+  if (kizIndex === -1) return new Set();
+  return new Set(values.slice(1).map(row => String(row[kizIndex] || '')).filter(Boolean));
+}
+
+function getEntityById_(entityId) {
+  const entity = readSettings_().find(item => item.entityId === entityId);
+  if (!entity) throw new Error('Юрлицо не найдено: ' + entityId);
+  return entity;
+}
+
+function ensureSettingsSheet_() {
+  const ss = SpreadsheetApp.getActive();
+  let sheet = ss.getSheetByName(SHEETS.settings);
+  if (!sheet) {
+    sheet = ss.insertSheet(SHEETS.settings);
+  }
+  const values = sheet.getDataRange().getValues();
+  const oldHeaders = values.length ? values[0].map(String) : [];
+  const oldRows = values.length > 1
+    ? values.slice(1).filter(row => row.some(cell => cell !== '')).map(row => objectFromRow_(oldHeaders, row))
+    : [];
+  const rowsById = {};
+  oldRows.forEach(row => {
+    const entityId = String(row.entityId || '').trim();
+    if (entityId) rowsById[entityId] = row;
+  });
+
+  const seedRows = DEFAULT_ENTITIES.map(defaultEntity => {
+    const row = rowsById[defaultEntity.entityId] || {};
+    return {
+      entityId: defaultEntity.entityId,
+      legalName: row.legalName || defaultEntity.legalName,
+      inn: row.inn || '',
+      wbToken: row.wbToken || '',
+      isActive: row.isActive == null || row.isActive === '' ? 'TRUE' : row.isActive,
+      withdrawSheetName: row.withdrawSheetName || defaultEntity.withdrawSheetName,
+      introduceSheetName: row.introduceSheetName || defaultEntity.introduceSheetName,
+      archiveSheetName: row.archiveSheetName || defaultEntity.archiveSheetName,
+      apiMode: row.apiMode || 'fbs',
+      lastSyncAt: row.lastSyncAt || '',
+      lastSyncStatus: row.lastSyncStatus || '',
+      comment: row.comment || ''
+    };
+  });
+
+  oldRows.forEach(row => {
+    const entityId = String(row.entityId || '').trim();
+    if (!entityId || rowsById[entityId] !== row) return;
+    if (DEFAULT_ENTITIES.some(defaultEntity => defaultEntity.entityId === entityId)) return;
+    seedRows.push({
+      entityId,
+      legalName: row.legalName || entityId,
+      inn: row.inn || '',
+      wbToken: row.wbToken || '',
+      isActive: row.isActive == null || row.isActive === '' ? 'TRUE' : row.isActive,
+      withdrawSheetName: row.withdrawSheetName || entityId + '_withdraw',
+      introduceSheetName: row.introduceSheetName || entityId + '_introduce',
+      archiveSheetName: row.archiveSheetName || entityId + '_archive',
+      apiMode: row.apiMode || 'fbs',
+      lastSyncAt: row.lastSyncAt || '',
+      lastSyncStatus: row.lastSyncStatus || '',
+      comment: row.comment || ''
+    });
+  });
+
+  sheet.clearContents();
+  sheet.getRange(1, 1, 1, SETTINGS_HEADERS.length).setValues([SETTINGS_HEADERS]);
+  sheet.setFrozenRows(1);
+  sheet.getRange(1, 1, 1, SETTINGS_HEADERS.length).setFontWeight('bold').setBackground('#eeeeee');
+  if (seedRows.length) {
+    sheet.getRange(2, 1, seedRows.length, SETTINGS_HEADERS.length)
+      .setValues(seedRows.map(row => SETTINGS_HEADERS.map(header => row[header] == null ? '' : row[header])));
   }
 
-  return { newRows: newValues.length, duplicateRows };
+  return seedRows.map(row => ({
+    entityId: String(row.entityId || '').trim(),
+    legalName: String(row.legalName || '').trim(),
+    inn: String(row.inn || '').trim(),
+    wbToken: String(row.wbToken || '').trim(),
+    isActive: String(row.isActive).toUpperCase() !== 'FALSE',
+    withdrawSheetName: String(row.withdrawSheetName || '').trim(),
+    introduceSheetName: String(row.introduceSheetName || '').trim(),
+    archiveSheetName: String(row.archiveSheetName || '').trim(),
+    apiMode: String(row.apiMode || 'auto').trim() || 'auto'
+  }));
 }
 
 function readExistingKeys_(sheet) {
@@ -501,7 +794,9 @@ function readSettings_() {
       inn: String(row.inn || '').trim(),
       wbToken: String(row.wbToken || '').trim(),
       isActive: String(row.isActive).toUpperCase() !== 'FALSE',
-      dataSheetName: String(row.dataSheetName || '').trim(),
+      withdrawSheetName: String(row.withdrawSheetName || row.entityId + '_withdraw').trim(),
+      introduceSheetName: String(row.introduceSheetName || row.entityId + '_introduce').trim(),
+      archiveSheetName: String(row.archiveSheetName || row.entityId + '_archive').trim(),
       apiMode: String(row.apiMode || 'auto').trim() || 'auto'
     }));
 }
