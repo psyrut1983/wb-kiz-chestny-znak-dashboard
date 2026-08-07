@@ -37,18 +37,18 @@ const LEGACY_DATA_SHEETS = {
 const DEFAULT_ENTITIES = [
   {
     entityId: 'entity_1',
-    legalName: 'Юрлицо 1',
-    withdrawSheetName: 'Юрлицо 1 - КИЗы к выводу',
-    introduceSheetName: 'Юрлицо 1 - КИЗы к вводу',
-    archiveSheetName: 'Юрлицо 1 - Архив выведенных КИЗов'
+    legalName: 'Юрлицо 1'
   },
   {
     entityId: 'entity_2',
-    legalName: 'Юрлицо 2',
-    withdrawSheetName: 'Юрлицо 2 - КИЗы к выводу',
-    introduceSheetName: 'Юрлицо 2 - КИЗы к вводу',
-    archiveSheetName: 'Юрлицо 2 - Архив выведенных КИЗов'
+    legalName: 'Юрлицо 2'
   }
+];
+
+const ENTITY_SHEET_KINDS = [
+  { key: 'withdrawSheetName', kind: 'withdraw' },
+  { key: 'introduceSheetName', kind: 'introduce' },
+  { key: 'archiveSheetName', kind: 'archive' }
 ];
 
 const SETTINGS_KEYS = [
@@ -839,9 +839,9 @@ function ensureSettingsSheet_() {
       inn: row.inn || '',
       wbToken: row.wbToken || '',
       isActive: row.isActive == null || row.isActive === '' ? 'TRUE' : row.isActive,
-      withdrawSheetName: normalizeEntitySheetName_(defaultEntity.entityId, 'withdraw', row.withdrawSheetName, legalName, defaultEntity),
-      introduceSheetName: normalizeEntitySheetName_(defaultEntity.entityId, 'introduce', row.introduceSheetName, legalName, defaultEntity),
-      archiveSheetName: normalizeEntitySheetName_(defaultEntity.entityId, 'archive', row.archiveSheetName, legalName, defaultEntity),
+      withdrawSheetName: buildEntitySheetName_(legalName, 'withdraw'),
+      introduceSheetName: buildEntitySheetName_(legalName, 'introduce'),
+      archiveSheetName: buildEntitySheetName_(legalName, 'archive'),
       apiMode: row.apiMode || 'fbs',
       lastSyncAt: row.lastSyncAt || '',
       lastSyncStatus: row.lastSyncStatus || '',
@@ -860,15 +860,17 @@ function ensureSettingsSheet_() {
       inn: row.inn || '',
       wbToken: row.wbToken || '',
       isActive: row.isActive == null || row.isActive === '' ? 'TRUE' : row.isActive,
-      withdrawSheetName: normalizeEntitySheetName_(entityId, 'withdraw', row.withdrawSheetName, legalName, null),
-      introduceSheetName: normalizeEntitySheetName_(entityId, 'introduce', row.introduceSheetName, legalName, null),
-      archiveSheetName: normalizeEntitySheetName_(entityId, 'archive', row.archiveSheetName, legalName, null),
+      withdrawSheetName: buildEntitySheetName_(legalName, 'withdraw'),
+      introduceSheetName: buildEntitySheetName_(legalName, 'introduce'),
+      archiveSheetName: buildEntitySheetName_(legalName, 'archive'),
       apiMode: row.apiMode || 'fbs',
       lastSyncAt: row.lastSyncAt || '',
       lastSyncStatus: row.lastSyncStatus || '',
       comment: row.comment || ''
     });
   });
+
+  renameEntitySheetsFromSettings_(seedRows, rowsById);
 
   sheet.clearContents();
   sheet.getRange(1, 1, 1, SETTINGS_HEADERS.length).setValues([SETTINGS_HEADERS]);
@@ -915,9 +917,9 @@ function readSettings_() {
       inn: String(row.inn || '').trim(),
       wbToken: String(row.wbToken || '').trim(),
       isActive: parseActiveValue_(row.isActive),
-      withdrawSheetName: normalizeEntitySheetName_(row.entityId, 'withdraw', row.withdrawSheetName, row.legalName, getDefaultEntity_(row.entityId)),
-      introduceSheetName: normalizeEntitySheetName_(row.entityId, 'introduce', row.introduceSheetName, row.legalName, getDefaultEntity_(row.entityId)),
-      archiveSheetName: normalizeEntitySheetName_(row.entityId, 'archive', row.archiveSheetName, row.legalName, getDefaultEntity_(row.entityId)),
+      withdrawSheetName: buildEntitySheetName_(row.legalName || row.entityId, 'withdraw'),
+      introduceSheetName: buildEntitySheetName_(row.legalName || row.entityId, 'introduce'),
+      archiveSheetName: buildEntitySheetName_(row.legalName || row.entityId, 'archive'),
       apiMode: String(row.apiMode || 'auto').trim() || 'auto'
     }));
 }
@@ -1024,17 +1026,34 @@ function renameLegacyDataSheets_() {
   });
 }
 
-function normalizeEntitySheetName_(entityId, kind, value, legalName, defaultEntity) {
-  const raw = String(value || '').trim();
-  const normalizedEntityId = String(entityId || '').trim();
-  const normalizedLegalName = String(legalName || normalizedEntityId || 'Юрлицо').trim();
-  const legacyName = normalizedEntityId ? normalizedEntityId + '_' + kind : '';
-  if (raw && raw !== legacyName) return raw;
-  if (defaultEntity) {
-    if (kind === 'withdraw') return defaultEntity.withdrawSheetName;
-    if (kind === 'introduce') return defaultEntity.introduceSheetName;
-    if (kind === 'archive') return defaultEntity.archiveSheetName;
-  }
+function renameEntitySheetsFromSettings_(entities, oldRowsById) {
+  const ss = SpreadsheetApp.getActive();
+  entities.forEach(entity => {
+    const oldRow = oldRowsById[entity.entityId] || {};
+    const defaultEntity = getDefaultEntity_(entity.entityId);
+    ENTITY_SHEET_KINDS.forEach(sheetKind => {
+      const newName = entity[sheetKind.key];
+      if (!newName || ss.getSheetByName(newName)) return;
+      const aliases = uniqueStrings_([
+        oldRow[sheetKind.key],
+        entity.entityId ? entity.entityId + '_' + sheetKind.kind : '',
+        defaultEntity ? buildEntitySheetName_(defaultEntity.legalName, sheetKind.kind) : ''
+      ]);
+
+      for (let i = 0; i < aliases.length; i++) {
+        const oldName = aliases[i];
+        if (!oldName || oldName === newName) continue;
+        const oldSheet = ss.getSheetByName(oldName);
+        if (!oldSheet) continue;
+        oldSheet.setName(newName);
+        return;
+      }
+    });
+  });
+}
+
+function buildEntitySheetName_(legalName, kind) {
+  const normalizedLegalName = String(legalName || 'Юрлицо').trim();
   if (kind === 'withdraw') return normalizedLegalName + ' - КИЗы к выводу';
   if (kind === 'introduce') return normalizedLegalName + ' - КИЗы к вводу';
   return normalizedLegalName + ' - Архив выведенных КИЗов';
@@ -1043,6 +1062,17 @@ function normalizeEntitySheetName_(entityId, kind, value, legalName, defaultEnti
 function getDefaultEntity_(entityId) {
   const normalizedEntityId = String(entityId || '').trim();
   return DEFAULT_ENTITIES.find(entity => entity.entityId === normalizedEntityId) || null;
+}
+
+function uniqueStrings_(values) {
+  const seen = {};
+  return values
+    .map(value => String(value || '').trim())
+    .filter(value => {
+      if (!value || seen[value]) return false;
+      seen[value] = true;
+      return true;
+    });
 }
 
 function settingsValues_(row) {
