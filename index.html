@@ -199,6 +199,7 @@ const DEFAULT_SPREADSHEET_ID = '1Ol0SdvkxilSx5wnjwiUqWjDL6lpzWU8bGR5-xERWCe8';
 const DEFAULT_CLIENT_ID = '366976253303-h3c07t2n5jg5lqreerhln0rengh5thcq.apps.googleusercontent.com';
 const SETTINGS_SHEET = 'Настройки';
 const SCOPES = 'https://www.googleapis.com/auth/spreadsheets';
+const MAX_BATCH_ROWS = 1000;
 const STORAGE_KEYS = {
   spreadsheetId: 'wbKizDashboard.spreadsheetId',
   clientId: 'wbKizDashboard.clientId'
@@ -600,8 +601,8 @@ function renderPanel(kind){
   const sub = kind === 'withdraw' ? el.withdrawSub : el.introduceSub;
   const selectedLabel = kind === 'withdraw' ? el.withdrawSelected : el.introduceSelected;
   const list = kind === 'withdraw' ? el.withdrawList : el.introduceList;
-  sub.textContent = `${fmt(rows.length)} строк`;
-  selectedLabel.textContent = `Выбрано: ${fmt(selected.size)}`;
+  sub.textContent = `${fmt(rows.length)} строк · партия до ${fmt(MAX_BATCH_ROWS)}`;
+  selectedLabel.textContent = `Выбрано: ${fmt(selected.size)} из ${fmt(MAX_BATCH_ROWS)}`;
   if(!rows.length){
     list.innerHTML = '<div class="empty">Нет КИЗов для этой операции</div>';
     return;
@@ -673,7 +674,10 @@ function toggleAll(kind){
   const allSelected = rows.length > 0 && rows.every(row => selected.has(row.__key));
   selected.clear();
   if(!allSelected){
-    rows.forEach(row => selected.add(row.__key));
+    rows.slice(0, MAX_BATCH_ROWS).forEach(row => selected.add(row.__key));
+    if(rows.length > MAX_BATCH_ROWS){
+      toast(`Выбраны первые ${fmt(MAX_BATCH_ROWS)} строк. Остальное делай следующей партией.`);
+    }
   }
   renderPanel(kind);
   syncActionButtons();
@@ -720,6 +724,7 @@ function downloadXml(kind){
     toast('Сначала выбери строки', 'error');
     return;
   }
+  if(!ensureBatchLimit(rows)) return;
   if(rows.some(row => !normalize(row['КИЗ / SGTIN']))){
     toast('В выбранных строках есть пустой КИЗ', 'error');
     return;
@@ -742,6 +747,7 @@ async function confirmWithdraw(){
   const entity = selectedEntity();
   const rows = selectedRows('withdraw');
   if(!entity || !rows.length) return;
+  if(!ensureBatchLimit(rows)) return;
   if(!ensureGenerated('withdraw', rows)) return;
   if(!confirm(`Подтвердить вывод из оборота?\n\nЮрлицо: ${entity.legalName}\nСтрок: ${rows.length}\n\nНажимай только после загрузки XML в Честный знак.`)) return;
   const selectedKeys = new Set(rows.map(row => row.__key));
@@ -762,6 +768,7 @@ async function confirmIntroduce(){
   const entity = selectedEntity();
   const rows = selectedRows('introduce');
   if(!entity || !rows.length) return;
+  if(!ensureBatchLimit(rows)) return;
   if(!ensureGenerated('introduce', rows)) return;
   if(!confirm(`Подтвердить ввод обратно в оборот?\n\nЮрлицо: ${entity.legalName}\nСтрок: ${rows.length}\n\nНажимай только после загрузки XML в Честный знак.`)) return;
   const selectedKeys = new Set(rows.map(row => row.__key));
@@ -778,6 +785,12 @@ function ensureGenerated(kind, rows){
   const missing = rows.filter(row => !state.generated[kind].has(row.__key));
   if(!missing.length) return true;
   toast('Сначала скачай XML для выбранных строк', 'error');
+  return false;
+}
+
+function ensureBatchLimit(rows){
+  if(rows.length <= MAX_BATCH_ROWS) return true;
+  toast(`Слишком большая партия: ${fmt(rows.length)} строк. Максимум за раз: ${fmt(MAX_BATCH_ROWS)}.`, 'error');
   return false;
 }
 
