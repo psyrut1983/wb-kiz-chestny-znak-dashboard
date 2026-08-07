@@ -6,7 +6,7 @@
  * - лист "Настройки" хранит юрлица и WB API токены;
  * - Apps Script ежедневно загружает вчерашние КИЗы из WB;
  * - КИЗы движутся между листами "к выводу", "к вводу" и "архив";
- * - HTML-интерфейс показывает рабочую панель поверх данных таблицы.
+ * - отдельного HTML-интерфейса пока нет.
  */
 
 const TZ = 'Europe/Moscow';
@@ -216,57 +216,14 @@ const DATA_ALIASES = {
   comment: ['Комментарий', 'comment']
 };
 
-const LOG_ALIASES = {
-  startedAt: ['Начало', 'startedAt'],
-  finishedAt: ['Окончание', 'finishedAt'],
-  entityId: ['ID юрлица', 'entityId'],
-  legalName: ['Название юрлица', 'legalName'],
-  periodFrom: ['Период с', 'periodFrom'],
-  periodTo: ['Период по', 'periodTo'],
-  rowsLoaded: ['КИЗов найдено', 'rowsLoaded'],
-  newRows: ['Новых строк', 'newRows'],
-  duplicateRows: ['Дублей', 'duplicateRows'],
-  withdrawNewRows: ['Новых к выводу', 'withdrawNewRows'],
-  introduceNewRows: ['Новых к вводу', 'introduceNewRows'],
-  errors: ['Ошибок', 'errors'],
-  status: ['Статус', 'status'],
-  message: ['Сообщение', 'message']
-};
-
-const ERROR_ALIASES = {
-  createdAt: ['Создано', 'createdAt'],
-  entityId: ['ID юрлица', 'entityId'],
-  step: ['Шаг', 'step'],
-  orderId: ['ID заказа WB', 'orderId'],
-  kiz: ['КИЗ / SGTIN', 'kiz'],
-  message: ['Сообщение', 'message'],
-  rawResponse: ['Сырой ответ', 'rawResponse']
-};
-
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('WB КИЗы')
     .addItem('1. Подготовить таблицу', 'setupWorkbook')
     .addItem('2. Загрузить данные за вчера', 'syncYesterdayManual')
-    .addItem('3. Открыть панель', 'showDashboard')
-    .addSeparator()
-    .addItem('4. Создать триггер 08:00', 'createDailyTrigger')
+    .addItem('3. Создать триггер 08:00', 'createDailyTrigger')
     .addItem('Удалить триггеры WB', 'deleteDailyTriggers')
     .addToUi();
-}
-
-function doGet() {
-  return HtmlService.createHtmlOutputFromFile('Dashboard')
-    .setTitle('WB КИЗы · Панель управления')
-    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
-}
-
-function showDashboard() {
-  const html = HtmlService.createHtmlOutputFromFile('Dashboard')
-    .setTitle('WB КИЗы · Панель управления')
-    .setWidth(1200)
-    .setHeight(820);
-  SpreadsheetApp.getUi().showModalDialog(html, 'WB КИЗы · Панель управления');
 }
 
 function setupWorkbook() {
@@ -288,14 +245,6 @@ function setupWorkbook_() {
 
 function syncYesterdayManual() {
   syncYesterdayAllEntities(true);
-}
-
-function syncYesterdayFromDashboard() {
-  const results = syncYesterdayAllEntities(false);
-  return {
-    results,
-    dashboard: getDashboardData()
-  };
 }
 
 function syncYesterdayAllEntities(showToast) {
@@ -790,14 +739,6 @@ function confirmWithdrawDone(entityId) {
   return archiveValues.length;
 }
 
-function confirmWithdrawDoneFromDashboard(entityId) {
-  const moved = confirmWithdrawDone(entityId);
-  return {
-    moved,
-    dashboard: getDashboardData()
-  };
-}
-
 function confirmIntroduceDone(entityId) {
   setupWorkbook_();
   const entity = getEntityById_(entityId);
@@ -809,87 +750,6 @@ function confirmIntroduceDone(entityId) {
   clearDataRows_(introduceSheet);
   SpreadsheetApp.getActive().toast('КИЗы введены обратно: ' + introduceRows.length + ' · удалено из архива: ' + removed, 'WB КИЗы', 8);
   return { introduced: introduceRows.length, removedFromArchive: removed };
-}
-
-function confirmIntroduceDoneFromDashboard(entityId) {
-  const result = confirmIntroduceDone(entityId);
-  return {
-    introduced: result.introduced,
-    removedFromArchive: result.removedFromArchive,
-    dashboard: getDashboardData()
-  };
-}
-
-function getDashboardData() {
-  setupWorkbook_();
-  const entities = readSettings_();
-  const logRows = readLogObjects_();
-  const errorRows = readErrorObjects_();
-  const entityCards = entities.map(entity => {
-    const withdrawRows = readDataObjects_(getOrCreateSheet_(entity.withdrawSheetName, DATA_HEADERS));
-    const introduceRows = readDataObjects_(getOrCreateSheet_(entity.introduceSheetName, DATA_HEADERS));
-    const archiveRows = readDataObjects_(getOrCreateSheet_(entity.archiveSheetName, DATA_HEADERS));
-    const lastLog = findLastLogForEntity_(logRows, entity.entityId);
-    const lastError = findLastErrorForEntity_(errorRows, entity.entityId);
-
-    return {
-      entityId: entity.entityId,
-      legalName: entity.legalName,
-      inn: entity.inn,
-      isActive: entity.isActive,
-      apiMode: entity.apiMode,
-      sheets: {
-        withdraw: entity.withdrawSheetName,
-        introduce: entity.introduceSheetName,
-        archive: entity.archiveSheetName
-      },
-      counts: {
-        withdraw: withdrawRows.length,
-        introduce: introduceRows.length,
-        archive: archiveRows.length,
-        total: withdrawRows.length + introduceRows.length + archiveRows.length
-      },
-      samples: {
-        withdraw: compactDataRows_(withdrawRows, 8),
-        introduce: compactDataRows_(introduceRows, 8),
-        archive: compactDataRows_(archiveRows, 8)
-      },
-      lastSync: lastLog ? {
-        startedAt: lastLog.startedAt,
-        finishedAt: lastLog.finishedAt,
-        status: lastLog.status,
-        rowsLoaded: numberOrZero_(lastLog.rowsLoaded),
-        newRows: numberOrZero_(lastLog.newRows),
-        withdrawNewRows: numberOrZero_(lastLog.withdrawNewRows),
-        introduceNewRows: numberOrZero_(lastLog.introduceNewRows),
-        duplicateRows: numberOrZero_(lastLog.duplicateRows),
-        errors: numberOrZero_(lastLog.errors),
-        message: lastLog.message
-      } : null,
-      lastError: lastError ? {
-        createdAt: lastError.createdAt,
-        step: lastError.step,
-        orderId: lastError.orderId,
-        kiz: lastError.kiz,
-        message: lastError.message
-      } : null
-    };
-  });
-
-  return {
-    generatedAt: now_(),
-    entities: entityCards,
-    totals: entityCards.reduce((acc, entity) => {
-      acc.withdraw += entity.counts.withdraw;
-      acc.introduce += entity.counts.introduce;
-      acc.archive += entity.counts.archive;
-      acc.total += entity.counts.total;
-      if (entity.isActive) acc.activeEntities += 1;
-      return acc;
-    }, { withdraw: 0, introduce: 0, archive: 0, total: 0, activeEntities: 0 }),
-    recentLogs: compactLogRows_(logRows, 8),
-    recentErrors: compactErrorRows_(errorRows, 8)
-  };
 }
 
 function appendValues_(sheet, values) {
@@ -904,90 +764,6 @@ function readDataObjects_(sheet) {
   return values.slice(1)
     .filter(row => row.some(cell => cell !== ''))
     .map(row => objectFromRowWithAliases_(headers, row, DATA_ALIASES));
-}
-
-function readLogObjects_() {
-  const sheet = getOrCreateSheet_(SHEETS.syncLog, LOG_HEADERS);
-  const values = sheet.getDataRange().getValues();
-  if (values.length < 2) return [];
-  const headers = values[0].map(String);
-  return values.slice(1)
-    .filter(row => row.some(cell => cell !== ''))
-    .map(row => objectFromRowWithAliases_(headers, row, LOG_ALIASES));
-}
-
-function readErrorObjects_() {
-  const sheet = getOrCreateSheet_(SHEETS.errors, ERROR_HEADERS);
-  const values = sheet.getDataRange().getValues();
-  if (values.length < 2) return [];
-  const headers = values[0].map(String);
-  return values.slice(1)
-    .filter(row => row.some(cell => cell !== ''))
-    .map(row => objectFromRowWithAliases_(headers, row, ERROR_ALIASES));
-}
-
-function findLastLogForEntity_(logRows, entityId) {
-  for (let i = logRows.length - 1; i >= 0; i--) {
-    if (String(logRows[i].entityId || '') === entityId) return logRows[i];
-  }
-  return null;
-}
-
-function findLastErrorForEntity_(errorRows, entityId) {
-  for (let i = errorRows.length - 1; i >= 0; i--) {
-    if (String(errorRows[i].entityId || '') === entityId) return errorRows[i];
-  }
-  return null;
-}
-
-function compactDataRows_(rows, limit) {
-  return rows.slice(-limit).reverse().map(row => ({
-    syncDate: row.syncDate,
-    operation: row.operation,
-    kiz: row.kiz,
-    article: row.article,
-    barcode: row.barcode,
-    orderId: row.orderId,
-    supplierStatus: row.supplierStatus,
-    wbStatus: row.wbStatus,
-    wbDate: row.wbDate,
-    status: row.status,
-    source: row.source,
-    updatedAt: row.updatedAt
-  }));
-}
-
-function compactLogRows_(rows, limit) {
-  return rows.slice(-limit).reverse().map(row => ({
-    startedAt: row.startedAt,
-    finishedAt: row.finishedAt,
-    entityId: row.entityId,
-    legalName: row.legalName,
-    rowsLoaded: numberOrZero_(row.rowsLoaded),
-    newRows: numberOrZero_(row.newRows),
-    withdrawNewRows: numberOrZero_(row.withdrawNewRows),
-    introduceNewRows: numberOrZero_(row.introduceNewRows),
-    duplicateRows: numberOrZero_(row.duplicateRows),
-    errors: numberOrZero_(row.errors),
-    status: row.status,
-    message: row.message
-  }));
-}
-
-function compactErrorRows_(rows, limit) {
-  return rows.slice(-limit).reverse().map(row => ({
-    createdAt: row.createdAt,
-    entityId: row.entityId,
-    step: row.step,
-    orderId: row.orderId,
-    kiz: row.kiz,
-    message: row.message
-  }));
-}
-
-function numberOrZero_(value) {
-  const number = Number(value);
-  return Number.isFinite(number) ? number : 0;
 }
 
 function clearDataRows_(sheet) {
