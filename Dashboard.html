@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WB КИЗы · Панель управления</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0c0c0c;
+  --bg2:#141414;
+  --bg3:#1b1b1b;
+  --line:#262626;
+  --text:#f4f4f2;
+  --muted:#8a8a87;
+  --soft:#b7b7b2;
+  --accent:#e8333a;
+  --accent-dim:rgba(232,51,58,.14);
+  --good:#3ecf6a;
+  --warn:#f0b84a;
+  --blue:#5aa9ff;
+  --mono:'JetBrains Mono',monospace;
+  --sans:'Manrope',system-ui,sans-serif;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased}
+body{min-height:100vh;padding-bottom:44px}
+button,input{font:inherit}
+.wrap{max-width:1120px;margin:0 auto;padding:0 18px}
+header{border-bottom:1px solid var(--line);padding:22px 0 18px}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.18em;color:var(--accent);text-transform:uppercase;display:flex;align-items:center;gap:8px}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--accent);display:inline-block}
+.dot.live{animation:pulse 1.6s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+h1{font-size:26px;font-weight:800;letter-spacing:0;margin:6px 0 0;line-height:1.15}
+.sub-row{display:flex;justify-content:space-between;align-items:center;margin-top:7px;gap:10px;flex-wrap:wrap}
+.sub{color:var(--muted);font-size:12.5px;font-family:var(--mono)}
+.toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.btn{background:var(--bg2);border:1px solid var(--line);color:var(--muted);font-family:var(--mono);font-size:11px;padding:8px 10px;border-radius:7px;cursor:pointer;white-space:nowrap}
+.btn:hover{border-color:var(--accent);color:var(--text)}
+.btn:disabled{opacity:.55;cursor:default}
+.btn.primary{background:var(--accent-dim);border-color:rgba(232,51,58,.45);color:var(--text)}
+.btn.good{background:rgba(62,207,106,.1);border-color:rgba(62,207,106,.35);color:var(--text)}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line);margin-top:18px;border:1px solid var(--line)}
+.kpi{background:var(--bg);padding:14px 12px;min-width:0}
+.kpi .num{font-family:var(--mono);font-size:20px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kpi .lbl{font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-top:4px;line-height:1.25}
+.kpi.withdraw .num{color:var(--accent)}
+.kpi.introduce .num{color:var(--warn)}
+.kpi.archive .num{color:var(--good)}
+.kpi.active .num{color:var(--blue)}
+.band{border-bottom:1px solid var(--line);padding:18px 0}
+.section-title{font-family:var(--mono);font-size:11px;letter-spacing:.12em;color:var(--muted);text-transform:uppercase;margin:0 0 10px;display:flex;align-items:center;justify-content:space-between;gap:10px}
+.controls{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;padding:20px 0 4px}
+.search-box{position:relative;min-width:0}
+#searchInput{width:100%;background:var(--bg2);border:1px solid var(--line);color:var(--text);font-family:var(--mono);font-size:14px;padding:12px 42px 12px 14px;border-radius:10px;outline:none;transition:border-color .15s}
+#searchInput:focus{border-color:var(--accent)}
+#searchInput::placeholder{color:var(--muted)}
+.clear-btn{position:absolute;right:9px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--muted);font-size:18px;cursor:pointer;padding:6px;display:none}
+.segmented{display:inline-flex;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--bg2)}
+.segmented button{border:0;border-right:1px solid var(--line);background:transparent;color:var(--muted);padding:11px 12px;font-family:var(--mono);font-size:11px;cursor:pointer;white-space:nowrap}
+.segmented button:last-child{border-right:0}
+.segmented button.active{background:var(--accent-dim);color:var(--text)}
+.entity-grid{display:grid;grid-template-columns:1fr;gap:16px;margin-top:14px}
+.panel{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--bg)}
+.panel-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;background:var(--bg2);border-bottom:1px solid var(--line);padding:12px 14px}
+.panel-title{font-weight:800;font-size:15px;line-height:1.25}
+.panel-meta{font-family:var(--mono);color:var(--muted);font-size:11px;margin-top:3px}
+.entity-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.mini-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line);border-bottom:1px solid var(--line)}
+.mini-kpi{background:var(--bg);padding:11px 12px}
+.mini-kpi .num{font-family:var(--mono);font-size:18px;font-weight:700}
+.mini-kpi .lbl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-top:3px}
+.mini-kpi.withdraw .num{color:var(--accent)}
+.mini-kpi.introduce .num{color:var(--warn)}
+.mini-kpi.archive .num{color:var(--good)}
+.mini-kpi.total .num{color:var(--blue)}
+.sheet-row{display:flex;gap:8px;flex-wrap:wrap;padding:12px 14px;border-bottom:1px solid var(--line)}
+.pill{border:1px solid var(--line);border-radius:8px;padding:7px 9px;font-family:var(--mono);font-size:11px;color:var(--muted)}
+.pill b{color:var(--text)}
+.tabs{display:flex;gap:0;border-bottom:1px solid var(--line);background:var(--bg)}
+.tabs button{flex:1;border:0;border-right:1px solid var(--line);background:transparent;color:var(--muted);font-family:var(--mono);font-size:11px;padding:10px 8px;cursor:pointer}
+.tabs button:last-child{border-right:0}
+.tabs button.active{color:var(--text);background:var(--bg3)}
+table{width:100%;border-collapse:collapse}
+th,td{padding:10px 12px;border-bottom:1px solid var(--line);text-align:right;font-size:12px;vertical-align:middle}
+th{font-family:var(--mono);color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.06em;font-weight:500;background:var(--bg)}
+td{font-family:var(--mono)}
+tr:last-child td{border-bottom:none}
+th.left,td.left{text-align:left}
+td.kiz{max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.muted{color:var(--muted)}
+.good-text{color:var(--good)}
+.warn-text{color:var(--warn)}
+.accent-text{color:var(--accent)}
+.blue-text{color:var(--blue)}
+.status-block{color:var(--muted);font-size:13px;padding:34px 0;text-align:center;font-family:var(--mono)}
+.status-block.error{color:var(--accent);border:1px dashed var(--accent);border-radius:10px;padding:20px;line-height:1.5}
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px}
+.empty-table{padding:28px 14px;text-align:center;color:var(--muted);font-family:var(--mono);font-size:12px}
+footer{margin-top:28px;padding-top:14px;border-top:1px solid var(--line);font-family:var(--mono);font-size:11px;color:var(--muted);display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+@media (max-width:900px){
+  .kpis,.mini-kpis{grid-template-columns:repeat(2,1fr)}
+  .two-col{grid-template-columns:1fr}
+}
+@media (max-width:560px){
+  .wrap{padding:0 14px}
+  header{padding:16px 0 14px}
+  h1{font-size:20px}
+  .controls{grid-template-columns:1fr}
+  .segmented{width:100%}
+  .segmented button{flex:1;padding:10px 8px}
+  .panel-head{display:block}
+  .entity-actions{justify-content:flex-start;margin-top:10px}
+  th,td{padding:8px 9px;font-size:11px}
+  .wide-only{display:none}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow"><span class="dot" id="liveDot"></span>WB · ЧЕСТНЫЙ ЗНАК · КИЗЫ</div>
+    <h1>Панель управления КИЗами</h1>
+    <div class="sub-row">
+      <div class="sub" id="snapshotDate">загрузка данных...</div>
+      <div class="toolbar">
+        <button class="btn" id="setupBtn" type="button">настроить таблицу</button>
+        <button class="btn primary" id="syncBtn" type="button">загрузить за вчера</button>
+        <button class="btn" id="refreshBtn" type="button">обновить</button>
+      </div>
+    </div>
+    <div class="kpis">
+      <div class="kpi withdraw"><div class="num" id="kpiWithdraw">-</div><div class="lbl">КИЗы к выводу из оборота</div></div>
+      <div class="kpi introduce"><div class="num" id="kpiIntroduce">-</div><div class="lbl">КИЗы к вводу обратно</div></div>
+      <div class="kpi archive"><div class="num" id="kpiArchive">-</div><div class="lbl">Архив выведенных КИЗов</div></div>
+      <div class="kpi active"><div class="num" id="kpiActive">-</div><div class="lbl">Активных юрлиц</div></div>
+    </div>
+  </header>
+
+  <section class="controls">
+    <div class="search-box">
+      <input id="searchInput" type="text" autocomplete="off" inputmode="search" placeholder="Поиск по юрлицу, ИНН, КИЗу, артикулу или заказу WB">
+      <button class="clear-btn" id="clearBtn" type="button">×</button>
+    </div>
+    <div class="segmented" id="viewMode">
+      <button data-view="entities" class="active" type="button">юрлица</button>
+      <button data-view="logs" type="button">журнал</button>
+      <button data-view="errors" type="button">ошибки</button>
+    </div>
+  </section>
+
+  <main id="content">
+    <div class="status-block">Подключаюсь к Google Таблице...</div>
+  </main>
+
+  <footer>
+    <span>Источник: рабочие листы текущей Google Таблицы</span>
+    <span id="footerMeta">ожидание данных</span>
+  </footer>
+</div>
+
+<script>
+let DASHBOARD = null;
+let currentView = 'entities';
+let currentQuery = '';
+const activeTabs = {};
+
+const content = document.getElementById('content');
+const liveDot = document.getElementById('liveDot');
+const refreshBtn = document.getElementById('refreshBtn');
+const syncBtn = document.getElementById('syncBtn');
+const setupBtn = document.getElementById('setupBtn');
+const input = document.getElementById('searchInput');
+const clearBtn = document.getElementById('clearBtn');
+
+function escapeHtml(value){
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+}
+
+function fmt(value){
+  return (Number(value) || 0).toLocaleString('ru-RU');
+}
+
+function normalize(value){
+  return String(value ?? '').toLowerCase().replace(/\s+/g,' ').trim();
+}
+
+function setBusy(isBusy, text){
+  liveDot.classList.toggle('live', isBusy);
+  refreshBtn.disabled = isBusy;
+  syncBtn.disabled = isBusy;
+  setupBtn.disabled = isBusy;
+  if(text) document.getElementById('footerMeta').textContent = text;
+}
+
+function callServer(name, args, busyText){
+  setBusy(true, busyText || 'выполняю действие...');
+  return new Promise((resolve, reject) => {
+    const runner = google.script.run
+      .withSuccessHandler(resolve)
+      .withFailureHandler(err => reject(err));
+    runner[name].apply(runner, args || []);
+  }).finally(() => setBusy(false));
+}
+
+async function loadDashboard(){
+  content.innerHTML = '<div class="status-block">Загружаю рабочую панель...</div>';
+  try{
+    DASHBOARD = await callServer('getDashboardData', [], 'читаю листы...');
+    render();
+  }catch(err){
+    content.innerHTML = `<div class="status-block error">Не удалось загрузить панель: ${escapeHtml(err.message || err)}<br><br>Проверь, что в Apps Script есть файлы Code.gs и Dashboard.html.</div>`;
+    document.getElementById('snapshotDate').textContent = 'ошибка загрузки';
+    document.getElementById('footerMeta').textContent = 'ошибка';
+  }
+}
+
+function refreshWithData(data){
+  DASHBOARD = data.dashboard || data;
+  render();
+}
+
+function render(){
+  if(!DASHBOARD) return;
+  document.getElementById('snapshotDate').textContent = 'обновлено ' + DASHBOARD.generatedAt;
+  document.getElementById('footerMeta').textContent = 'данные загружены';
+  document.getElementById('kpiWithdraw').textContent = fmt(DASHBOARD.totals.withdraw);
+  document.getElementById('kpiIntroduce').textContent = fmt(DASHBOARD.totals.introduce);
+  document.getElementById('kpiArchive').textContent = fmt(DASHBOARD.totals.archive);
+  document.getElementById('kpiActive').textContent = fmt(DASHBOARD.totals.activeEntities);
+
+  if(currentView === 'logs') {
+    renderLogs();
+    return;
+  }
+  if(currentView === 'errors') {
+    renderErrors();
+    return;
+  }
+  renderEntities();
+}
+
+function rowMatches(row, query){
+  if(!query) return true;
+  return normalize(Object.values(row || {}).join(' ')).includes(query);
+}
+
+function entityMatches(entity, query){
+  if(!query) return true;
+  const base = [
+    entity.legalName,
+    entity.inn,
+    entity.entityId,
+    entity.sheets.withdraw,
+    entity.sheets.introduce,
+    entity.sheets.archive
+  ].join(' ');
+  const rows = []
+    .concat(entity.samples.withdraw || [])
+    .concat(entity.samples.introduce || [])
+    .concat(entity.samples.archive || []);
+  return normalize(base).includes(query) || rows.some(row => rowMatches(row, query));
+}
+
+function renderEntities(){
+  const query = normalize(currentQuery);
+  const entities = DASHBOARD.entities.filter(entity => entityMatches(entity, query));
+  if(!entities.length){
+    content.innerHTML = '<div class="status-block">Ничего не найдено</div>';
+    return;
+  }
+  content.innerHTML = `<section class="band">
+    <div class="section-title">Юрлица и рабочие очереди <span>${fmt(entities.length)} строк</span></div>
+    <div class="entity-grid">${entities.map(renderEntity).join('')}</div>
+  </section>`;
+}
+
+function renderEntity(entity){
+  const tab = activeTabs[entity.entityId] || 'withdraw';
+  const rows = entity.samples[tab] || [];
+  const titleByTab = {
+    withdraw: 'КИЗы к выводу',
+    introduce: 'КИЗы к вводу',
+    archive: 'Архив'
+  };
+  const status = entity.isActive ? '<span class="good-text">активно</span>' : '<span class="muted">выключено</span>';
+  return `<section class="panel" data-entity="${escapeHtml(entity.entityId)}">
+    <div class="panel-head">
+      <div>
+        <div class="panel-title">${escapeHtml(entity.legalName || entity.entityId)}</div>
+        <div class="panel-meta">ИНН ${escapeHtml(entity.inn || 'не указан')} · ${status} · WB API: ${escapeHtml(entity.apiMode || 'auto')}</div>
+      </div>
+      <div class="entity-actions">
+        <button class="btn good" data-action="confirm-withdraw" data-entity="${escapeHtml(entity.entityId)}" type="button">выведены из оборота</button>
+        <button class="btn good" data-action="confirm-introduce" data-entity="${escapeHtml(entity.entityId)}" type="button">введены обратно</button>
+      </div>
+    </div>
+    <div class="mini-kpis">
+      <div class="mini-kpi withdraw"><div class="num">${fmt(entity.counts.withdraw)}</div><div class="lbl">К выводу</div></div>
+      <div class="mini-kpi introduce"><div class="num">${fmt(entity.counts.introduce)}</div><div class="lbl">К вводу</div></div>
+      <div class="mini-kpi archive"><div class="num">${fmt(entity.counts.archive)}</div><div class="lbl">Архив</div></div>
+      <div class="mini-kpi total"><div class="num">${fmt(entity.counts.total)}</div><div class="lbl">Всего в работе</div></div>
+    </div>
+    <div class="sheet-row">
+      <span class="pill">Вывод <b>${escapeHtml(entity.sheets.withdraw)}</b></span>
+      <span class="pill">Ввод <b>${escapeHtml(entity.sheets.introduce)}</b></span>
+      <span class="pill">Архив <b>${escapeHtml(entity.sheets.archive)}</b></span>
+    </div>
+    <div class="tabs">
+      ${renderTab(entity, 'withdraw', 'к выводу')}
+      ${renderTab(entity, 'introduce', 'к вводу')}
+      ${renderTab(entity, 'archive', 'архив')}
+    </div>
+    ${renderRowsTable(rows, titleByTab[tab])}
+    ${renderEntityMeta(entity)}
+  </section>`;
+}
+
+function renderTab(entity, key, label){
+  const active = (activeTabs[entity.entityId] || 'withdraw') === key;
+  return `<button class="${active ? 'active' : ''}" data-action="tab" data-entity="${escapeHtml(entity.entityId)}" data-tab="${key}" type="button">${label} · ${fmt(entity.counts[key])}</button>`;
+}
+
+function renderRowsTable(rows, title){
+  if(!rows.length) return `<div class="empty-table">${escapeHtml(title)}: строк пока нет</div>`;
+  return `<table>
+    <thead><tr><th class="left">КИЗ / SGTIN</th><th>Артикул</th><th class="wide-only">Заказ WB</th><th>Статус WB</th><th class="wide-only">Дата</th></tr></thead>
+    <tbody>${rows.map(row => `<tr>
+      <td class="left kiz" title="${escapeHtml(row.kiz)}">${escapeHtml(row.kiz)}</td>
+      <td>${escapeHtml(row.article || '-')}</td>
+      <td class="wide-only">${escapeHtml(row.orderId || '-')}</td>
+      <td>${escapeHtml(row.wbStatus || '-')}</td>
+      <td class="wide-only muted">${escapeHtml(row.updatedAt || row.wbDate || '-')}</td>
+    </tr>`).join('')}</tbody>
+  </table>`;
+}
+
+function renderEntityMeta(entity){
+  const sync = entity.lastSync;
+  const error = entity.lastError;
+  return `<div class="sheet-row">
+    <span class="pill">Последняя загрузка <b>${escapeHtml(sync ? sync.finishedAt || sync.startedAt : 'не было')}</b></span>
+    <span class="pill">Статус <b>${escapeHtml(sync ? sync.status : 'нет данных')}</b></span>
+    <span class="pill">Последняя ошибка <b>${escapeHtml(error ? error.message : 'нет')}</b></span>
+  </div>`;
+}
+
+function renderLogs(){
+  const query = normalize(currentQuery);
+  const rows = DASHBOARD.recentLogs.filter(row => rowMatches(row, query));
+  content.innerHTML = `<section class="band">
+    <div class="section-title">Журнал синхронизации <span>${fmt(rows.length)} строк</span></div>
+    <section class="panel">${rows.length ? `<table>
+      <thead><tr><th class="left">Юрлицо</th><th>Окончание</th><th>КИЗов</th><th>К выводу</th><th>К вводу</th><th>Дубли</th><th>Статус</th></tr></thead>
+      <tbody>${rows.map(row => `<tr>
+        <td class="left">${escapeHtml(row.legalName || row.entityId)}</td>
+        <td>${escapeHtml(row.finishedAt || row.startedAt || '-')}</td>
+        <td>${fmt(row.rowsLoaded)}</td>
+        <td class="accent-text">${fmt(row.withdrawNewRows)}</td>
+        <td class="warn-text">${fmt(row.introduceNewRows)}</td>
+        <td>${fmt(row.duplicateRows)}</td>
+        <td>${escapeHtml(row.status || '-')}</td>
+      </tr>`).join('')}</tbody>
+    </table>` : '<div class="empty-table">Журнал пока пустой</div>'}</section>
+  </section>`;
+}
+
+function renderErrors(){
+  const query = normalize(currentQuery);
+  const rows = DASHBOARD.recentErrors.filter(row => rowMatches(row, query));
+  content.innerHTML = `<section class="band">
+    <div class="section-title">Ошибки обработки <span>${fmt(rows.length)} строк</span></div>
+    <section class="panel">${rows.length ? `<table>
+      <thead><tr><th class="left">Сообщение</th><th>Юрлицо</th><th class="wide-only">Шаг</th><th>Заказ WB</th><th class="wide-only">Создано</th></tr></thead>
+      <tbody>${rows.map(row => `<tr>
+        <td class="left accent-text">${escapeHtml(row.message || '-')}</td>
+        <td>${escapeHtml(row.entityId || '-')}</td>
+        <td class="wide-only">${escapeHtml(row.step || '-')}</td>
+        <td>${escapeHtml(row.orderId || '-')}</td>
+        <td class="wide-only muted">${escapeHtml(row.createdAt || '-')}</td>
+      </tr>`).join('')}</tbody>
+    </table>` : '<div class="empty-table">Ошибок пока нет</div>'}</section>
+  </section>`;
+}
+
+document.getElementById('viewMode').addEventListener('click', event => {
+  const button = event.target.closest('button[data-view]');
+  if(!button) return;
+  currentView = button.dataset.view;
+  document.querySelectorAll('#viewMode button').forEach(item => item.classList.toggle('active', item === button));
+  render();
+});
+
+document.addEventListener('click', async event => {
+  const button = event.target.closest('button[data-action]');
+  if(!button) return;
+  const action = button.dataset.action;
+  const entityId = button.dataset.entity;
+  try{
+    if(action === 'tab'){
+      activeTabs[entityId] = button.dataset.tab;
+      render();
+      return;
+    }
+    if(action === 'confirm-withdraw'){
+      const result = await callServer('confirmWithdrawDoneFromDashboard', [entityId], 'переношу КИЗы в архив...');
+      refreshWithData(result);
+      return;
+    }
+    if(action === 'confirm-introduce'){
+      const result = await callServer('confirmIntroduceDoneFromDashboard', [entityId], 'удаляю введённые КИЗы из архива...');
+      refreshWithData(result);
+    }
+  }catch(err){
+    content.insertAdjacentHTML('afterbegin', `<div class="status-block error">Действие не выполнено: ${escapeHtml(err.message || err)}</div>`);
+  }
+});
+
+input.addEventListener('input', () => {
+  currentQuery = input.value;
+  clearBtn.style.display = input.value ? 'block' : 'none';
+  render();
+});
+
+clearBtn.addEventListener('click', () => {
+  input.value = '';
+  currentQuery = '';
+  clearBtn.style.display = 'none';
+  render();
+  input.focus();
+});
+
+refreshBtn.addEventListener('click', loadDashboard);
+
+setupBtn.addEventListener('click', async () => {
+  try{
+    await callServer('setupWorkbook', [], 'настраиваю таблицу...');
+    await loadDashboard();
+  }catch(err){
+    content.innerHTML = `<div class="status-block error">Не удалось настроить таблицу: ${escapeHtml(err.message || err)}</div>`;
+  }
+});
+
+syncBtn.addEventListener('click', async () => {
+  try{
+    const result = await callServer('syncYesterdayFromDashboard', [], 'загружаю КИЗы из WB...');
+    refreshWithData(result);
+  }catch(err){
+    content.innerHTML = `<div class="status-block error">Не удалось загрузить данные WB: ${escapeHtml(err.message || err)}</div>`;
+  }
+});
+
+loadDashboard();
+</script>
+</body>
+</html>
