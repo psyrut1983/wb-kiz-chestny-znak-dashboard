@@ -20,7 +20,13 @@ const SHEETS = {
 const SHEET_ALIASES = {
   'Настройки': ['settings'],
   'Журнал синхронизации': ['sync_log'],
-  'Ошибки': ['errors']
+  'Ошибки': ['errors'],
+  'Юрлицо 1 - КИЗы к выводу': ['entity_1_withdraw'],
+  'Юрлицо 1 - КИЗы к вводу': ['entity_1_introduce'],
+  'Юрлицо 1 - Архив выведенных КИЗов': ['entity_1_archive'],
+  'Юрлицо 2 - КИЗы к выводу': ['entity_2_withdraw'],
+  'Юрлицо 2 - КИЗы к вводу': ['entity_2_introduce'],
+  'Юрлицо 2 - Архив выведенных КИЗов': ['entity_2_archive']
 };
 
 const LEGACY_DATA_SHEETS = {
@@ -826,15 +832,16 @@ function ensureSettingsSheet_() {
 
   const seedRows = DEFAULT_ENTITIES.map(defaultEntity => {
     const row = rowsById[defaultEntity.entityId] || {};
+    const legalName = row.legalName || defaultEntity.legalName;
     return {
       entityId: defaultEntity.entityId,
-      legalName: row.legalName || defaultEntity.legalName,
+      legalName,
       inn: row.inn || '',
       wbToken: row.wbToken || '',
       isActive: row.isActive == null || row.isActive === '' ? 'TRUE' : row.isActive,
-      withdrawSheetName: row.withdrawSheetName || defaultEntity.withdrawSheetName,
-      introduceSheetName: row.introduceSheetName || defaultEntity.introduceSheetName,
-      archiveSheetName: row.archiveSheetName || defaultEntity.archiveSheetName,
+      withdrawSheetName: normalizeEntitySheetName_(defaultEntity.entityId, 'withdraw', row.withdrawSheetName, legalName, defaultEntity),
+      introduceSheetName: normalizeEntitySheetName_(defaultEntity.entityId, 'introduce', row.introduceSheetName, legalName, defaultEntity),
+      archiveSheetName: normalizeEntitySheetName_(defaultEntity.entityId, 'archive', row.archiveSheetName, legalName, defaultEntity),
       apiMode: row.apiMode || 'fbs',
       lastSyncAt: row.lastSyncAt || '',
       lastSyncStatus: row.lastSyncStatus || '',
@@ -846,15 +853,16 @@ function ensureSettingsSheet_() {
     const entityId = String(row.entityId || '').trim();
     if (!entityId || rowsById[entityId] !== row) return;
     if (DEFAULT_ENTITIES.some(defaultEntity => defaultEntity.entityId === entityId)) return;
+    const legalName = row.legalName || entityId;
     seedRows.push({
       entityId,
-      legalName: row.legalName || entityId,
+      legalName,
       inn: row.inn || '',
       wbToken: row.wbToken || '',
       isActive: row.isActive == null || row.isActive === '' ? 'TRUE' : row.isActive,
-      withdrawSheetName: row.withdrawSheetName || (row.legalName || entityId) + ' - КИЗы к выводу',
-      introduceSheetName: row.introduceSheetName || (row.legalName || entityId) + ' - КИЗы к вводу',
-      archiveSheetName: row.archiveSheetName || (row.legalName || entityId) + ' - Архив выведенных КИЗов',
+      withdrawSheetName: normalizeEntitySheetName_(entityId, 'withdraw', row.withdrawSheetName, legalName, null),
+      introduceSheetName: normalizeEntitySheetName_(entityId, 'introduce', row.introduceSheetName, legalName, null),
+      archiveSheetName: normalizeEntitySheetName_(entityId, 'archive', row.archiveSheetName, legalName, null),
       apiMode: row.apiMode || 'fbs',
       lastSyncAt: row.lastSyncAt || '',
       lastSyncStatus: row.lastSyncStatus || '',
@@ -907,9 +915,9 @@ function readSettings_() {
       inn: String(row.inn || '').trim(),
       wbToken: String(row.wbToken || '').trim(),
       isActive: parseActiveValue_(row.isActive),
-      withdrawSheetName: String(row.withdrawSheetName || row.legalName + ' - КИЗы к выводу').trim(),
-      introduceSheetName: String(row.introduceSheetName || row.legalName + ' - КИЗы к вводу').trim(),
-      archiveSheetName: String(row.archiveSheetName || row.legalName + ' - Архив выведенных КИЗов').trim(),
+      withdrawSheetName: normalizeEntitySheetName_(row.entityId, 'withdraw', row.withdrawSheetName, row.legalName, getDefaultEntity_(row.entityId)),
+      introduceSheetName: normalizeEntitySheetName_(row.entityId, 'introduce', row.introduceSheetName, row.legalName, getDefaultEntity_(row.entityId)),
+      archiveSheetName: normalizeEntitySheetName_(row.entityId, 'archive', row.archiveSheetName, row.legalName, getDefaultEntity_(row.entityId)),
       apiMode: String(row.apiMode || 'auto').trim() || 'auto'
     }));
 }
@@ -1014,6 +1022,27 @@ function renameLegacyDataSheets_() {
     if (!oldSheet || ss.getSheetByName(newName)) return;
     oldSheet.setName(newName);
   });
+}
+
+function normalizeEntitySheetName_(entityId, kind, value, legalName, defaultEntity) {
+  const raw = String(value || '').trim();
+  const normalizedEntityId = String(entityId || '').trim();
+  const normalizedLegalName = String(legalName || normalizedEntityId || 'Юрлицо').trim();
+  const legacyName = normalizedEntityId ? normalizedEntityId + '_' + kind : '';
+  if (raw && raw !== legacyName) return raw;
+  if (defaultEntity) {
+    if (kind === 'withdraw') return defaultEntity.withdrawSheetName;
+    if (kind === 'introduce') return defaultEntity.introduceSheetName;
+    if (kind === 'archive') return defaultEntity.archiveSheetName;
+  }
+  if (kind === 'withdraw') return normalizedLegalName + ' - КИЗы к выводу';
+  if (kind === 'introduce') return normalizedLegalName + ' - КИЗы к вводу';
+  return normalizedLegalName + ' - Архив выведенных КИЗов';
+}
+
+function getDefaultEntity_(entityId) {
+  const normalizedEntityId = String(entityId || '').trim();
+  return DEFAULT_ENTITIES.find(entity => entity.entityId === normalizedEntityId) || null;
 }
 
 function settingsValues_(row) {
