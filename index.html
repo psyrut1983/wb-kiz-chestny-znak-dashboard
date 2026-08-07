@@ -108,7 +108,6 @@ input:focus{border-color:var(--accent)}
       <div class="sub">Один экран: выбери юрлицо, скачай XML, потом подтверди факт операции</div>
     </div>
     <div class="toolbar">
-      <button class="btn" id="demoBtn" type="button">Демо</button>
       <button class="btn primary" id="loginBtn" type="button">Войти Google</button>
       <button class="btn" id="refreshBtn" type="button">Обновить</button>
     </div>
@@ -240,7 +239,7 @@ const DATA_HEADERS = [
 ];
 
 const state = {
-  mode: 'demo',
+  mode: 'idle',
   token: '',
   tokenClient: null,
   spreadsheetId: '',
@@ -275,7 +274,6 @@ const el = {
   syncInfo: document.getElementById('syncInfo'),
   toast: document.getElementById('toast'),
   buttons: {
-    demo: document.getElementById('demoBtn'),
     login: document.getElementById('loginBtn'),
     refresh: document.getElementById('refreshBtn'),
     saveConfig: document.getElementById('saveConfigBtn'),
@@ -556,57 +554,6 @@ async function loadEntitySheets(entity){
   entity.archive = rowsToObjects(archiveValues);
 }
 
-function loadDemo(){
-  state.mode = 'demo';
-  state.entities = [
-    demoEntity('entity_1', 'ИП Синявин', '0000000000', 4, 2, 6),
-    demoEntity('entity_2', 'ИП Красикова', '7777777777', 2, 3, 8)
-  ];
-  state.selectedEntityId = state.entities[0].id;
-  state.selected.withdraw.clear();
-  state.selected.introduce.clear();
-  state.generated.withdraw.clear();
-  state.generated.introduce.clear();
-  render();
-  setStatus('Открыт демо-режим. Таблица не изменяется.', 'good');
-}
-
-function demoEntity(id, legalName, inn, withdrawCount, introduceCount, archiveCount){
-  const makeRows = (count, operation) => Array.from({length: count}, (_, index) => {
-    const row = {};
-    DATA_HEADERS.forEach(header => row[header] = '');
-    row['Дата загрузки'] = todayIso();
-    row['ID юрлица'] = id;
-    row['Название юрлица'] = legalName;
-    row['ИНН'] = inn;
-    row['Операция'] = operation;
-    row['КИЗ / SGTIN'] = `01046${String(index + 1).padStart(9, '0')}21DEMO${id.slice(-1)}${index + 1}`;
-    row['Артикул'] = `WB-${1000 + index}`;
-    row['ID заказа WB'] = `${id}-${9000 + index}`;
-    row['Статус WB'] = operation.includes('вводу') ? 'canceled_by_client' : 'sold';
-    row['Состояние строки'] = 'Новая строка';
-    row['Источник'] = 'Демо';
-    row['Создано'] = nowText();
-    row['Обновлено'] = nowText();
-    row['Ключ дубля'] = `${id}|${operation}|${row['КИЗ / SGTIN']}|${row['ID заказа WB']}`;
-    row.__key = makeRowKey(row);
-    return row;
-  });
-  return {
-    id,
-    legalName,
-    inn,
-    withdrawSheet: `${legalName} - КИЗы к выводу`,
-    introduceSheet: `${legalName} - КИЗы к вводу`,
-    archiveSheet: `${legalName} - Архив выведенных КИЗов`,
-    lastSyncAt: nowText(),
-    lastSyncStatus: 'Демо',
-    withdraw: {headers: DATA_HEADERS, rows: makeRows(withdrawCount, 'К выводу из оборота')},
-    introduce: {headers: DATA_HEADERS, rows: makeRows(introduceCount, 'К вводу обратно в оборот')},
-    archive: {headers: DATA_HEADERS, rows: makeRows(archiveCount, 'К выводу из оборота')}
-  };
-}
-
 function render(){
   renderEntities();
   renderSelectedEntity();
@@ -618,7 +565,7 @@ function render(){
 
 function renderEntities(){
   if(!state.entities.length){
-    el.entityRow.innerHTML = '<div class="empty">Пока нет данных. Нажми Демо или подключи Google Таблицу.</div>';
+    el.entityRow.innerHTML = '<div class="empty">Нажми «Войти Google», чтобы загрузить реальные данные из таблицы.</div>';
     return;
   }
   el.entityRow.innerHTML = state.entities.map(entity => {
@@ -643,7 +590,7 @@ function renderSelectedEntity(){
     return;
   }
   el.selectedTitle.textContent = entity.legalName;
-  el.selectedMeta.textContent = `ИНН ${entity.inn || 'не указан'} · режим ${state.mode === 'demo' ? 'демо' : 'Google Sheets'}`;
+  el.selectedMeta.textContent = `ИНН ${entity.inn || 'не указан'} · Google Sheets`;
 }
 
 function renderPanel(kind){
@@ -806,9 +753,7 @@ async function confirmWithdraw(){
   entity.withdraw.rows = entity.withdraw.rows.filter(row => !selectedKeys.has(row.__key));
   entity.archive.rows = mergeArchiveRows(entity.archive.rows, archiveRows);
   state.selected.withdraw.clear();
-  if(state.mode === 'google'){
-    await persistEntity(entity, ['withdraw', 'archive']);
-  }
+  await persistEntity(entity, ['withdraw', 'archive']);
   render();
   toast('Вывод подтверждён, строки перенесены в архив');
 }
@@ -824,9 +769,7 @@ async function confirmIntroduce(){
   entity.introduce.rows = entity.introduce.rows.filter(row => !selectedKeys.has(row.__key));
   entity.archive.rows = entity.archive.rows.filter(row => !selectedKiz.has(normalize(row['КИЗ / SGTIN'])));
   state.selected.introduce.clear();
-  if(state.mode === 'google'){
-    await persistEntity(entity, ['introduce', 'archive']);
-  }
+  await persistEntity(entity, ['introduce', 'archive']);
   render();
   toast('Ввод подтверждён, строки убраны из ввода и архива');
 }
@@ -869,10 +812,9 @@ async function persistEntity(entity, kinds){
 function bindEvents(){
   el.buttons.saveConfig.addEventListener('click', saveConfig);
   el.buttons.login.addEventListener('click', googleLogin);
-  el.buttons.demo.addEventListener('click', loadDemo);
   el.buttons.refresh.addEventListener('click', () => {
     if(state.mode === 'google') loadFromSheets();
-    else loadDemo();
+    else toast('Сначала нажми «Войти Google»', 'error');
   });
   el.buttons.withdrawXml.addEventListener('click', () => downloadXml('withdraw'));
   el.buttons.introduceXml.addEventListener('click', () => downloadXml('introduce'));
@@ -917,7 +859,8 @@ function boot(){
   loadConfig();
   bindEvents();
   setTimeout(initTokenClient, 500);
-  loadDemo();
+  render();
+  setStatus('Готово к подключению. Нажми «Войти Google».');
 }
 
 boot();
