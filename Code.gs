@@ -10,6 +10,7 @@
  */
 
 const TZ = 'Europe/Moscow';
+const MAX_PUBLIC_BATCH_ROWS = 1000;
 
 const SHEETS = {
   settings: 'Настройки',
@@ -224,6 +225,109 @@ function onOpen() {
     .addItem('3. Создать триггер 08:00', 'createDailyTrigger')
     .addItem('Удалить триггеры WB', 'deleteDailyTriggers')
     .addToUi();
+}
+
+function doGet() {
+  return HtmlService
+    .createHtmlOutputFromFile('Public')
+    .setTitle('КИЗы Честный знак')
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+}
+
+function getPublicDashboardData() {
+  setupWorkbook_();
+  const entities = readSettings_()
+    .filter(entity => entity.isActive)
+    .map(entity => {
+      const withdrawSheet = getOrCreateSheet_(entity.withdrawSheetName, DATA_HEADERS);
+      const introduceSheet = getOrCreateSheet_(entity.introduceSheetName, DATA_HEADERS);
+      const archiveSheet = getOrCreateSheet_(entity.archiveSheetName, DATA_HEADERS);
+      return {
+        id: entity.entityId,
+        legalName: entity.legalName,
+        inn: entity.inn,
+        lastSyncAt: entity.lastSyncAt || '',
+        lastSyncStatus: entity.lastSyncStatus || '',
+        withdraw: readDataObjects_(withdrawSheet).map(publicRow_),
+        introduce: readDataObjects_(introduceSheet).map(publicRow_),
+        archiveCount: readDataObjects_(archiveSheet).length
+      };
+    });
+  return {
+    updatedAt: now_(),
+    maxBatchRows: MAX_PUBLIC_BATCH_ROWS,
+    entities
+  };
+}
+
+function confirmPublicWithdraw(entityId, keys) {
+  setupWorkbook_();
+  const selectedKeys = normalizePublicKeys_(keys);
+  if (!selectedKeys.length) throw new Error('Не выбраны строки для подтверждения вывода');
+  if (selectedKeys.length > MAX_PUBLIC_BATCH_ROWS) throw new Error('Слишком большая партия: максимум ' + MAX_PUBLIC_BATCH_ROWS + ' строк');
+
+  const entity = getEntityById_(entityId);
+  const withdrawSheet = getOrCreateSheet_(entity.withdrawSheetName, DATA_HEADERS);
+  const archiveSheet = getOrCreateSheet_(entity.archiveSheetName, DATA_HEADERS);
+  const selectedSet = new Set(selectedKeys);
+  const timestamp = now_();
+  const withdrawRows = readDataObjects_(withdrawSheet);
+  const archiveRows = readDataObjects_(archiveSheet);
+  const keptWithdrawRows = [];
+  const archiveByKey = new Map(archiveRows.map(row => [publicRowKey_(row), row]));
+  let moved = 0;
+
+  withdrawRows.forEach(row => {
+    const key = publicRowKey_(row);
+    if (!selectedSet.has(key)) {
+      keptWithdrawRows.push(row);
+      return;
+    }
+    row.status = 'archived';
+    row.updatedAt = timestamp;
+    archiveByKey.set(key, row);
+    moved += 1;
+  });
+
+  rewriteDataSheet_(withdrawSheet, keptWithdrawRows);
+  rewriteDataSheet_(archiveSheet, Array.from(archiveByKey.values()));
+  return { moved, archiveCount: archiveByKey.size };
+}
+
+function confirmPublicIntroduce(entityId, keys) {
+  setupWorkbook_();
+  const selectedKeys = normalizePublicKeys_(keys);
+  if (!selectedKeys.length) throw new Error('Не выбраны строки для подтверждения ввода');
+  if (selectedKeys.length > MAX_PUBLIC_BATCH_ROWS) throw new Error('Слишком большая партия: максимум ' + MAX_PUBLIC_BATCH_ROWS + ' строк');
+
+  const entity = getEntityById_(entityId);
+  const introduceSheet = getOrCreateSheet_(entity.introduceSheetName, DATA_HEADERS);
+  const archiveSheet = getOrCreateSheet_(entity.archiveSheetName, DATA_HEADERS);
+  const selectedSet = new Set(selectedKeys);
+  const introduceRows = readDataObjects_(introduceSheet);
+  const keptIntroduceRows = [];
+  const introducedKiz = new Set();
+  let introduced = 0;
+
+  introduceRows.forEach(row => {
+    const key = publicRowKey_(row);
+    if (!selectedSet.has(key)) {
+      keptIntroduceRows.push(row);
+      return;
+    }
+    if (row.kiz) introducedKiz.add(String(row.kiz));
+    introduced += 1;
+  });
+
+  const archiveRows = readDataObjects_(archiveSheet);
+  const keptArchiveRows = archiveRows.filter(row => !introducedKiz.has(String(row.kiz || '')));
+  rewriteDataSheet_(introduceSheet, keptIntroduceRows);
+  rewriteDataSheet_(archiveSheet, keptArchiveRows);
+  return {
+    introduced,
+    removedFromArchive: archiveRows.length - keptArchiveRows.length,
+    archiveCount: keptArchiveRows.length
+  };
 }
 
 function setupWorkbook() {
@@ -766,6 +870,47 @@ function readDataObjects_(sheet) {
     .map(row => objectFromRowWithAliases_(headers, row, DATA_ALIASES));
 }
 
+function rewriteDataSheet_(sheet, rows) {
+  clearDataRows_(sheet);
+  if (!rows.length) return;
+  sheet.getRange(2, 1, rows.length, DATA_HEADERS.length)
+    .setValues(rows.map(row => dataValues_(row)));
+}
+
+function publicRow_(row) {
+  return {
+    key: publicRowKey_(row),
+    kiz: String(row.kiz || ''),
+    article: String(row.article || ''),
+    barcode: String(row.barcode || ''),
+    orderId: String(row.orderId || ''),
+    srid: String(row.srid || ''),
+    supplierStatus: String(row.supplierStatus || ''),
+    wbStatus: String(row.wbStatus || ''),
+    wbDate: String(row.wbDate || ''),
+    status: String(row.status || ''),
+    source: String(row.source || ''),
+    syncDate: String(row.syncDate || ''),
+    comment: String(row.comment || '')
+  };
+}
+
+function publicRowKey_(row) {
+  const dedupeKey = String(row.dedupeKey || '').trim();
+  if (dedupeKey) return dedupeKey;
+  return [
+    row.kiz,
+    row.orderId,
+    row.operation,
+    row.legalName
+  ].map(value => String(value || '').trim()).join('|');
+}
+
+function normalizePublicKeys_(keys) {
+  if (!Array.isArray(keys)) return [];
+  return uniqueStrings_(keys.map(key => String(key || '').trim()).filter(Boolean));
+}
+
 function clearDataRows_(sheet) {
   const lastRow = sheet.getLastRow();
   if (lastRow <= 1) return;
@@ -920,7 +1065,9 @@ function readSettings_() {
       withdrawSheetName: buildEntitySheetName_(row.legalName || row.entityId, 'withdraw'),
       introduceSheetName: buildEntitySheetName_(row.legalName || row.entityId, 'introduce'),
       archiveSheetName: buildEntitySheetName_(row.legalName || row.entityId, 'archive'),
-      apiMode: String(row.apiMode || 'auto').trim() || 'auto'
+      apiMode: String(row.apiMode || 'auto').trim() || 'auto',
+      lastSyncAt: String(row.lastSyncAt || '').trim(),
+      lastSyncStatus: String(row.lastSyncStatus || '').trim()
     }));
 }
 

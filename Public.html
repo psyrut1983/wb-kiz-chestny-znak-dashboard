@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>КИЗы Честный знак</title>
+  <style>
+    :root{
+      --bg:#f6f7f9;
+      --surface:#fff;
+      --text:#17191c;
+      --muted:#667085;
+      --line:#d9dee7;
+      --accent:#2563eb;
+      --good:#16803c;
+      --warn:#b45309;
+      --danger:#b42318;
+      --shadow:0 10px 30px rgba(16,24,40,.08);
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    button{font:inherit}
+    .app{max-width:1280px;margin:0 auto;padding:20px}
+    .top{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px}
+    h1{font-size:24px;line-height:1.2;margin:0 0 6px}
+    .sub{color:var(--muted)}
+    .actions{display:flex;gap:8px;align-items:center}
+    .btn{border:1px solid var(--line);background:var(--surface);color:var(--text);height:38px;padding:0 14px;border-radius:8px;cursor:pointer}
+    .btn:hover{border-color:#aeb7c7}
+    .btn:disabled{opacity:.45;cursor:not-allowed}
+    .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+    .btn.good{background:var(--good);border-color:var(--good);color:#fff}
+    .btn.warn{background:var(--warn);border-color:var(--warn);color:#fff}
+    .status{min-height:24px;margin-bottom:12px;color:var(--muted)}
+    .status.error{color:var(--danger)}
+    .status.good{color:var(--good)}
+    .entities{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:14px}
+    .entity{border:1px solid var(--line);background:var(--surface);border-radius:8px;padding:12px;text-align:left;cursor:pointer;box-shadow:var(--shadow)}
+    .entity.active{border-color:var(--accent);outline:2px solid rgba(37,99,235,.14)}
+    .entity-name{font-weight:700;margin-bottom:4px}
+    .entity-meta,.counts,.meta{color:var(--muted);font-size:13px}
+    .counts{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
+    .layout{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+    .panel{background:var(--surface);border:1px solid var(--line);border-radius:8px;box-shadow:var(--shadow);min-width:0}
+    .panel-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:14px;border-bottom:1px solid var(--line)}
+    .panel-title{font-size:18px;font-weight:800}
+    .panel-title.withdraw{color:var(--accent)}
+    .panel-title.introduce{color:var(--good)}
+    .panel-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+    .tools{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 14px;border-bottom:1px solid var(--line);color:var(--muted)}
+    .link{border:0;background:transparent;color:var(--accent);cursor:pointer;padding:0}
+    .list{max-height:62vh;overflow:auto}
+    .row{display:grid;grid-template-columns:24px minmax(0,1fr) auto;gap:10px;align-items:center;padding:10px 14px;border-bottom:1px solid #edf0f5}
+    .row:hover{background:#f8fafc}
+    .kiz{display:block;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;word-break:break-all}
+    .tag{font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:2px 8px;white-space:nowrap}
+    .empty{padding:28px 14px;color:var(--muted);text-align:center}
+    .footer{display:flex;justify-content:space-between;gap:10px;color:var(--muted);margin-top:12px}
+    .toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:#111827;color:#fff;border-radius:8px;padding:10px 14px;box-shadow:var(--shadow);display:none;max-width:min(720px,calc(100vw - 24px))}
+    .toast.show{display:block}
+    @media (max-width:850px){
+      .app{padding:14px}
+      .top,.footer{display:block}
+      .actions{margin-top:10px}
+      .layout{grid-template-columns:1fr}
+      .panel-head{display:block}
+      .panel-actions{justify-content:flex-start;margin-top:10px}
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <div class="top">
+      <div>
+        <h1>КИЗы Честный знак</h1>
+        <div class="sub">Публичная панель: доступ есть у любого, кому дали ссылку</div>
+      </div>
+      <div class="actions">
+        <button class="btn primary" id="refreshBtn" type="button">Обновить</button>
+      </div>
+    </div>
+
+    <div class="status" id="status">Загружаю данные...</div>
+    <div class="entities" id="entities"></div>
+
+    <section class="layout">
+      <div class="panel">
+        <div class="panel-head">
+          <div>
+            <div class="panel-title withdraw">КИЗы к выводу</div>
+            <div class="meta" id="withdrawMeta">0 строк</div>
+          </div>
+          <div class="panel-actions">
+            <button class="btn" id="withdrawXmlBtn" type="button">Скачать XML</button>
+            <button class="btn warn" id="withdrawConfirmBtn" type="button">Подтвердить вывод</button>
+          </div>
+        </div>
+        <div class="tools">
+          <span id="withdrawSelected">Выбрано: 0</span>
+          <button class="link" data-toggle="withdraw" type="button">выбрать все</button>
+        </div>
+        <div class="list" id="withdrawList"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <div>
+            <div class="panel-title introduce">КИЗы к вводу</div>
+            <div class="meta" id="introduceMeta">0 строк</div>
+          </div>
+          <div class="panel-actions">
+            <button class="btn" id="introduceXmlBtn" type="button">Скачать XML</button>
+            <button class="btn good" id="introduceConfirmBtn" type="button">Подтвердить ввод</button>
+          </div>
+        </div>
+        <div class="tools">
+          <span id="introduceSelected">Выбрано: 0</span>
+          <button class="link" data-toggle="introduce" type="button">выбрать все</button>
+        </div>
+        <div class="list" id="introduceList"></div>
+      </div>
+    </section>
+
+    <div class="footer">
+      <div id="archiveInfo">Архив: 0</div>
+      <div id="syncInfo">Последняя загрузка: нет данных</div>
+    </div>
+  </main>
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const state = {
+      data: null,
+      entityId: '',
+      selected: {withdraw:new Set(), introduce:new Set()},
+      generated: {withdraw:new Set(), introduce:new Set()},
+      busy: false
+    };
+
+    const el = {
+      status: document.getElementById('status'),
+      entities: document.getElementById('entities'),
+      withdrawMeta: document.getElementById('withdrawMeta'),
+      introduceMeta: document.getElementById('introduceMeta'),
+      withdrawSelected: document.getElementById('withdrawSelected'),
+      introduceSelected: document.getElementById('introduceSelected'),
+      withdrawList: document.getElementById('withdrawList'),
+      introduceList: document.getElementById('introduceList'),
+      archiveInfo: document.getElementById('archiveInfo'),
+      syncInfo: document.getElementById('syncInfo'),
+      toast: document.getElementById('toast'),
+      refresh: document.getElementById('refreshBtn'),
+      withdrawXml: document.getElementById('withdrawXmlBtn'),
+      introduceXml: document.getElementById('introduceXmlBtn'),
+      withdrawConfirm: document.getElementById('withdrawConfirmBtn'),
+      introduceConfirm: document.getElementById('introduceConfirmBtn')
+    };
+
+    function fmt(value){return new Intl.NumberFormat('ru-RU').format(Number(value || 0))}
+    function maxRows(){return state.data?.maxBatchRows || 1000}
+    function todayIso(){return new Date().toISOString().slice(0,10)}
+    function normalize(value){return String(value ?? '').trim()}
+    function cdata(value){return normalize(value).replaceAll(']]>', ']]]]><![CDATA[>')}
+    function xmlText(value){
+      return normalize(value).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&apos;');
+    }
+    function escapeHtml(value){
+      return normalize(value).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');
+    }
+    function cleanFilename(value){return normalize(value).replace(/[\\/:*?"<>|]+/g,'_').replace(/\s+/g,'_') || 'юрлицо'}
+
+    function setStatus(text, kind=''){
+      el.status.textContent = text;
+      el.status.className = `status ${kind}`;
+    }
+    function toast(text){
+      el.toast.textContent = text;
+      el.toast.classList.add('show');
+      setTimeout(() => el.toast.classList.remove('show'), 3200);
+    }
+    function setBusy(value){
+      state.busy = value;
+      syncButtons();
+    }
+    function serverRun(name, ...args){
+      return new Promise((resolve, reject) => {
+        google.script.run
+          .withSuccessHandler(resolve)
+          .withFailureHandler(error => reject(new Error(error.message || String(error))))
+          [name](...args);
+      });
+    }
+    function selectedEntity(){
+      return (state.data?.entities || []).find(entity => entity.id === state.entityId) || null;
+    }
+    function selectedRows(kind){
+      const entity = selectedEntity();
+      if(!entity) return [];
+      return entity[kind].filter(row => state.selected[kind].has(row.key));
+    }
+
+    async function refresh(){
+      setBusy(true);
+      setStatus('Загружаю данные...');
+      try{
+        const data = await serverRun('getPublicDashboardData');
+        state.data = data;
+        if(!data.entities.some(entity => entity.id === state.entityId)){
+          state.entityId = data.entities[0]?.id || '';
+        }
+        state.selected.withdraw.clear();
+        state.selected.introduce.clear();
+        state.generated.withdraw.clear();
+        state.generated.introduce.clear();
+        render();
+        setStatus(`Данные обновлены: ${data.updatedAt}`, 'good');
+      }catch(error){
+        setStatus(error.message, 'error');
+        toast(error.message);
+      }finally{
+        setBusy(false);
+      }
+    }
+
+    function render(){
+      renderEntities();
+      renderPanel('withdraw');
+      renderPanel('introduce');
+      renderFooter();
+      syncButtons();
+    }
+    function renderEntities(){
+      const entities = state.data?.entities || [];
+      if(!entities.length){
+        el.entities.innerHTML = '<div class="empty">Нет активных юрлиц в настройках</div>';
+        return;
+      }
+      el.entities.innerHTML = entities.map(entity => {
+        const active = entity.id === state.entityId ? 'active' : '';
+        return `<button class="entity ${active}" data-entity="${escapeHtml(entity.id)}" type="button">
+          <div class="entity-name">${escapeHtml(entity.legalName)}</div>
+          <div class="entity-meta">ИНН ${escapeHtml(entity.inn || 'не указан')}</div>
+          <div class="counts">
+            <span>вывод <b>${fmt(entity.withdraw.length)}</b></span>
+            <span>ввод <b>${fmt(entity.introduce.length)}</b></span>
+            <span>архив <b>${fmt(entity.archiveCount)}</b></span>
+          </div>
+        </button>`;
+      }).join('');
+    }
+    function renderPanel(kind){
+      const entity = selectedEntity();
+      const rows = entity ? entity[kind] : [];
+      const selected = state.selected[kind];
+      const meta = kind === 'withdraw' ? el.withdrawMeta : el.introduceMeta;
+      const selectedLabel = kind === 'withdraw' ? el.withdrawSelected : el.introduceSelected;
+      const list = kind === 'withdraw' ? el.withdrawList : el.introduceList;
+      meta.textContent = `${fmt(rows.length)} строк · партия до ${fmt(maxRows())}`;
+      selectedLabel.textContent = `Выбрано: ${fmt(selected.size)} из ${fmt(maxRows())}`;
+      if(!rows.length){
+        list.innerHTML = '<div class="empty">Нет КИЗов для этой операции</div>';
+        return;
+      }
+      list.innerHTML = rows.map(row => {
+        const checked = selected.has(row.key) ? 'checked' : '';
+        const metaText = [
+          row.article ? `арт. ${row.article}` : '',
+          row.orderId ? `заказ ${row.orderId}` : '',
+          row.wbStatus || ''
+        ].filter(Boolean).join(' · ');
+        return `<label class="row">
+          <input type="checkbox" data-kind="${kind}" data-key="${escapeHtml(row.key)}" ${checked}>
+          <span>
+            <span class="kiz">${escapeHtml(row.kiz || 'КИЗ не указан')}</span>
+            <span class="meta">${escapeHtml(metaText || 'без деталей')}</span>
+          </span>
+          <span class="tag">${escapeHtml(row.article || row.source || 'WB')}</span>
+        </label>`;
+      }).join('');
+    }
+    function renderFooter(){
+      const entity = selectedEntity();
+      if(!entity){
+        el.archiveInfo.textContent = 'Архив: 0';
+        el.syncInfo.textContent = 'Последняя загрузка: нет данных';
+        return;
+      }
+      el.archiveInfo.textContent = `Архив: ${fmt(entity.archiveCount)} КИЗов`;
+      el.syncInfo.textContent = `Последняя загрузка: ${entity.lastSyncAt || 'нет данных'}${entity.lastSyncStatus ? ' · ' + entity.lastSyncStatus : ''}`;
+    }
+    function syncButtons(){
+      const hasEntity = Boolean(selectedEntity());
+      el.refresh.disabled = state.busy;
+      el.withdrawXml.disabled = state.busy || !hasEntity || !state.selected.withdraw.size;
+      el.introduceXml.disabled = state.busy || !hasEntity || !state.selected.introduce.size;
+      el.withdrawConfirm.disabled = state.busy || !hasEntity || !state.selected.withdraw.size;
+      el.introduceConfirm.disabled = state.busy || !hasEntity || !state.selected.introduce.size;
+    }
+    function toggleAll(kind){
+      const entity = selectedEntity();
+      if(!entity) return;
+      const rows = entity[kind];
+      const selected = state.selected[kind];
+      const allSelected = rows.length && rows.every(row => selected.has(row.key));
+      selected.clear();
+      if(!allSelected){
+        rows.slice(0, maxRows()).forEach(row => selected.add(row.key));
+        if(rows.length > maxRows()) toast(`Выбраны первые ${fmt(maxRows())} строк`);
+      }
+      renderPanel(kind);
+      syncButtons();
+    }
+    function ensureBatch(rows){
+      if(rows.length <= maxRows()) return true;
+      toast(`Слишком большая партия: ${fmt(rows.length)} строк`);
+      return false;
+    }
+    function ensureGenerated(kind, rows){
+      const missing = rows.filter(row => !state.generated[kind].has(row.key));
+      if(!missing.length) return true;
+      toast('Сначала скачай XML для выбранных строк');
+      return false;
+    }
+    function buildWithdrawXml(entity, rows){
+      const date = todayIso();
+      const products = rows.map(row => `  <product>
+   <cis><![CDATA[${cdata(row.kiz)}]]></cis>
+  </product>`).join('\n');
+      return `<?xml version="1.0" encoding="UTF-8"?>
+<withdrawal version="8">
+ <trade_participant_inn>${xmlText(entity.inn)}</trade_participant_inn>
+ <withdrawal_type>OTHER</withdrawal_type>
+ <withdrawal_type_other>Продажа товара на маркетплейсе Wildberries</withdrawal_type_other>
+ <withdrawal_date>${date}</withdrawal_date>
+ <primary_document_type>OTHER</primary_document_type>
+ <primary_document_date>${date}</primary_document_date>
+ <primary_document_custom_name>Документ реализации</primary_document_custom_name>
+ <products_list>
+${products}
+ </products_list>
+</withdrawal>`;
+    }
+    function buildIntroduceXml(entity, rows){
+      const products = rows.map(row => `  <product>
+   <ki><![CDATA[${cdata(row.kiz)}]]></ki>
+  </product>`).join('\n');
+      return `<?xml version="1.0" encoding="UTF-8"?>
+<return version="1">
+ <trade_participant_inn>${xmlText(entity.inn)}</trade_participant_inn>
+ <return_type>OWN_USE_RETURN</return_type>
+ <products_list>
+${products}
+ </products_list>
+</return>`;
+    }
+    function downloadXml(kind){
+      const entity = selectedEntity();
+      const rows = selectedRows(kind);
+      if(!entity || !rows.length) return;
+      if(!ensureBatch(rows)) return;
+      if(rows.some(row => !normalize(row.kiz))){
+        toast('В выбранных строках есть пустой КИЗ');
+        return;
+      }
+      const xml = kind === 'withdraw' ? buildWithdrawXml(entity, rows) : buildIntroduceXml(entity, rows);
+      const operation = kind === 'withdraw' ? 'Вывод_из_оборота' : 'Возврат_в_оборот';
+      const blob = new Blob([xml], {type:'application/xml;charset=utf-8'});
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${operation}_${cleanFilename(entity.legalName)}_${todayIso()}.xml`;
+      link.click();
+      URL.revokeObjectURL(url);
+      rows.forEach(row => state.generated[kind].add(row.key));
+      toast(`XML скачан: ${fmt(rows.length)} строк`);
+    }
+    async function confirmOperation(kind){
+      const entity = selectedEntity();
+      const rows = selectedRows(kind);
+      if(!entity || !rows.length) return;
+      if(!ensureBatch(rows)) return;
+      if(!ensureGenerated(kind, rows)) return;
+      const title = kind === 'withdraw' ? 'Подтвердить вывод из оборота?' : 'Подтвердить ввод обратно в оборот?';
+      if(!confirm(`${title}\n\nЮрлицо: ${entity.legalName}\nСтрок: ${rows.length}\n\nНажимай только после загрузки XML в Честный знак.`)) return;
+      setBusy(true);
+      try{
+        const method = kind === 'withdraw' ? 'confirmPublicWithdraw' : 'confirmPublicIntroduce';
+        const result = await serverRun(method, entity.id, rows.map(row => row.key));
+        toast(kind === 'withdraw'
+          ? `Вывод подтверждён: ${fmt(result.moved)} строк`
+          : `Ввод подтверждён: ${fmt(result.introduced)} строк`);
+        await refresh();
+      }catch(error){
+        setStatus(error.message, 'error');
+        toast(error.message);
+      }finally{
+        setBusy(false);
+      }
+    }
+
+    document.addEventListener('click', event => {
+      const entityBtn = event.target.closest('[data-entity]');
+      if(entityBtn){
+        state.entityId = entityBtn.dataset.entity;
+        state.selected.withdraw.clear();
+        state.selected.introduce.clear();
+        render();
+        return;
+      }
+      const toggleBtn = event.target.closest('[data-toggle]');
+      if(toggleBtn) toggleAll(toggleBtn.dataset.toggle);
+    });
+    document.addEventListener('change', event => {
+      const input = event.target.closest('input[type="checkbox"][data-kind]');
+      if(!input) return;
+      const set = state.selected[input.dataset.kind];
+      if(input.checked){
+        if(set.size >= maxRows()){
+          input.checked = false;
+          toast(`Максимум за раз: ${fmt(maxRows())} строк`);
+          return;
+        }
+        set.add(input.dataset.key);
+      }else{
+        set.delete(input.dataset.key);
+      }
+      renderPanel(input.dataset.kind);
+      syncButtons();
+    });
+
+    el.refresh.addEventListener('click', refresh);
+    el.withdrawXml.addEventListener('click', () => downloadXml('withdraw'));
+    el.introduceXml.addEventListener('click', () => downloadXml('introduce'));
+    el.withdrawConfirm.addEventListener('click', () => confirmOperation('withdraw'));
+    el.introduceConfirm.addEventListener('click', () => confirmOperation('introduce'));
+    refresh();
+  </script>
+</body>
+</html>
