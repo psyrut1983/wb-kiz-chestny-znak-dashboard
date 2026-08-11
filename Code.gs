@@ -235,7 +235,6 @@ function doGet() {
 }
 
 function getPublicDashboardData() {
-  setupWorkbook_();
   const entities = readSettings_()
     .filter(entity => entity.isActive)
     .map(entity => {
@@ -261,7 +260,6 @@ function getPublicDashboardData() {
 }
 
 function confirmPublicWithdraw(entityId, keys) {
-  setupWorkbook_();
   const selectedKeys = normalizePublicKeys_(keys);
   if (!selectedKeys.length) throw new Error('Не выбраны строки для подтверждения вывода');
   if (selectedKeys.length > MAX_PUBLIC_BATCH_ROWS) throw new Error('Слишком большая партия: максимум ' + MAX_PUBLIC_BATCH_ROWS + ' строк');
@@ -295,7 +293,6 @@ function confirmPublicWithdraw(entityId, keys) {
 }
 
 function confirmPublicIntroduce(entityId, keys) {
-  setupWorkbook_();
   const selectedKeys = normalizePublicKeys_(keys);
   if (!selectedKeys.length) throw new Error('Не выбраны строки для подтверждения ввода');
   if (selectedKeys.length > MAX_PUBLIC_BATCH_ROWS) throw new Error('Слишком большая партия: максимум ' + MAX_PUBLIC_BATCH_ROWS + ' строк');
@@ -887,10 +884,10 @@ function publicRow_(row) {
     srid: String(row.srid || ''),
     supplierStatus: String(row.supplierStatus || ''),
     wbStatus: String(row.wbStatus || ''),
-    wbDate: String(row.wbDate || ''),
+    wbDate: formatMaybeDate_(row.wbDate),
     status: String(row.status || ''),
     source: String(row.source || ''),
-    syncDate: String(row.syncDate || ''),
+    syncDate: formatMaybeDate_(row.syncDate),
     comment: String(row.comment || '')
   };
 }
@@ -1066,7 +1063,7 @@ function readSettings_() {
       introduceSheetName: buildEntitySheetName_(row.legalName || row.entityId, 'introduce'),
       archiveSheetName: buildEntitySheetName_(row.legalName || row.entityId, 'archive'),
       apiMode: String(row.apiMode || 'auto').trim() || 'auto',
-      lastSyncAt: String(row.lastSyncAt || '').trim(),
+      lastSyncAt: formatMaybeDate_(row.lastSyncAt),
       lastSyncStatus: String(row.lastSyncStatus || '').trim()
     }));
 }
@@ -1314,4 +1311,12 @@ function now_() {
 
 function formatDate_(date) {
   return Utilities.formatDate(date, TZ, 'yyyy-MM-dd HH:mm:ss');
+}
+
+function formatMaybeDate_(value) {
+  if (!value) return '';
+  if (Object.prototype.toString.call(value) === '[object Date]' && !isNaN(value.getTime())) {
+    return formatDate_(value);
+  }
+  return String(value).trim();
 }
