@@ -89,6 +89,7 @@ XML для вывода из оборота:
 - `withdrawal_type = OTHER`;
 - `withdrawal_type_other = Дистанционная продажа`;
 - `primary_document_number` формируется автоматически в формате `WB-FBS-OUT-ИНН-ДАТА-ВРЕМЯ`;
+- `primary_document_custom_name = заказ (отправление)`;
 - КИЗы идут в `products_list/product/cis`.
 
 XML для ввода обратно в оборот:
