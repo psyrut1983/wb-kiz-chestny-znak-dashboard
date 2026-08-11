@@ -91,7 +91,7 @@
             <div class="meta" id="withdrawMeta">0 строк</div>
           </div>
           <div class="panel-actions">
-            <button class="btn" id="withdrawXmlBtn" type="button">Скачать XML</button>
+            <button class="btn" id="withdrawXmlBtn" type="button">Скачать CSV</button>
             <button class="btn warn" id="withdrawConfirmBtn" type="button">Подтвердить вывод</button>
           </div>
         </div>
@@ -323,29 +323,73 @@
     function ensureGenerated(kind, rows){
       const missing = rows.filter(row => !state.generated[kind].has(row.key));
       if(!missing.length) return true;
-      toast('Сначала скачай XML для выбранных строк');
+      toast('Сначала скачай файл для выбранных строк');
       return false;
     }
-    function buildWithdrawXml(entity, rows){
+    function csvText(value){
+      const text = normalize(value);
+      if(/[",\r\n]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
+      return text;
+    }
+    function csvLine(values){
+      return values.map(csvText).join(',');
+    }
+    function orderDocumentNumber(row, fallback){
+      return normalize(row.orderId) || fallback;
+    }
+    function buildWithdrawCsv(entity, rows){
       const date = todayIso();
-      const documentNumber = primaryDocumentNumber(entity, 'OUT', date);
-      const products = rows.map(row => `  <product>
-   <cis><![CDATA[${cdata(row.kiz)}]]></cis>
-  </product>`).join('\n');
-      return `<?xml version="1.0" encoding="UTF-8"?>
-<withdrawal version="8">
- <trade_participant_inn>${xmlText(entity.inn)}</trade_participant_inn>
- <withdrawal_type>OTHER</withdrawal_type>
- <withdrawal_type_other>Дистанционная продажа</withdrawal_type_other>
- <withdrawal_date>${date}</withdrawal_date>
- <primary_document_type>OTHER</primary_document_type>
- <primary_document_number>${xmlText(documentNumber)}</primary_document_number>
- <primary_document_date>${date}</primary_document_date>
- <primary_document_custom_name>заказ (отправление)</primary_document_custom_name>
- <products_list>
-${products}
- </products_list>
-</withdrawal>`;
+      const fallbackDocumentNumber = primaryDocumentNumber(entity, 'OUT', date);
+      const uniqueOrderIds = Array.from(new Set(rows.map(row => normalize(row.orderId)).filter(Boolean)));
+      const headerDocumentNumber = uniqueOrderIds.length === 1 ? uniqueOrderIds[0] : fallbackDocumentNumber;
+      const lines = [
+        csvLine([
+          'ИНН участника оборота',
+          'ИНН покупателя',
+          'Причина вывода из оборота',
+          'Другая причина вывода из оборота',
+          'Дата вывода из оборота',
+          'Тип первичного документа',
+          'Номер первичного документа',
+          'Дата первичного документа',
+          'Наименование первичного документа',
+          'Идентификатор ФИАС',
+          'Идентификатор госконтракта',
+          'Версия'
+        ]),
+        csvLine([
+          entity.inn,
+          '',
+          'Другое',
+          'Дистанционная продажа',
+          date,
+          'Прочее',
+          headerDocumentNumber,
+          date,
+          'заказ (отправление)',
+          '',
+          '',
+          '7'
+        ]),
+        'Параметры товаров',
+        csvLine([
+          'КИ',
+          'Цена за единицу',
+          'Тип первичного документа',
+          'Номер первичного документа',
+          'Дата первичного документа',
+          'Наименование первичного документа'
+        ]),
+        ...rows.map(row => csvLine([
+          row.kiz,
+          '',
+          'Прочее',
+          orderDocumentNumber(row, fallbackDocumentNumber),
+          date,
+          'заказ (отправление)'
+        ]))
+      ];
+      return '\ufeff' + lines.join('\r\n') + '\r\n';
     }
     function buildIntroduceXml(entity, rows){
       const date = todayIso();
@@ -372,17 +416,19 @@ ${products}
         toast('В выбранных строках есть пустой КИЗ');
         return;
       }
-      const xml = kind === 'withdraw' ? buildWithdrawXml(entity, rows) : buildIntroduceXml(entity, rows);
+      const content = kind === 'withdraw' ? buildWithdrawCsv(entity, rows) : buildIntroduceXml(entity, rows);
       const operation = kind === 'withdraw' ? 'Вывод_из_оборота' : 'Возврат_в_оборот';
-      const blob = new Blob([xml], {type:'application/xml;charset=utf-8'});
+      const extension = kind === 'withdraw' ? 'csv' : 'xml';
+      const mimeType = kind === 'withdraw' ? 'text/csv;charset=utf-8' : 'application/xml;charset=utf-8';
+      const blob = new Blob([content], {type:mimeType});
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `${operation}_${cleanFilename(entity.legalName)}_${todayIso()}.xml`;
+      link.download = `${operation}_${cleanFilename(entity.legalName)}_${todayIso()}.${extension}`;
       link.click();
       URL.revokeObjectURL(url);
       rows.forEach(row => state.generated[kind].add(row.key));
-      toast(`XML скачан: ${fmt(rows.length)} строк`);
+      toast(`${extension.toUpperCase()} скачан: ${fmt(rows.length)} строк`);
     }
     async function confirmOperation(kind){
       const entity = selectedEntity();
@@ -391,7 +437,7 @@ ${products}
       if(!ensureBatch(rows)) return;
       if(!ensureGenerated(kind, rows)) return;
       const title = kind === 'withdraw' ? 'Подтвердить вывод из оборота?' : 'Подтвердить ввод обратно в оборот?';
-      if(!confirm(`${title}\n\nЮрлицо: ${entity.legalName}\nСтрок: ${rows.length}\n\nНажимай только после загрузки XML в Честный знак.`)) return;
+      if(!confirm(`${title}\n\nЮрлицо: ${entity.legalName}\nСтрок: ${rows.length}\n\nНажимай только после загрузки файла в Честный знак.`)) return;
       setBusy(true);
       try{
         const method = kind === 'withdraw' ? 'confirmPublicWithdraw' : 'confirmPublicIntroduce';
