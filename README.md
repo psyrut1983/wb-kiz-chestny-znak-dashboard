@@ -86,7 +86,8 @@ XML для вывода из оборота:
 
 - корневой тег `withdrawal`, версия `8`;
 - ИНН из `Настройки`;
-- `withdrawal_type = DISTANCE` — дистанционный способ продажи товаров;
+- `withdrawal_type = OTHER`;
+- `withdrawal_type_other = Дистанционная продажа`;
 - КИЗы идут в `products_list/product/cis`.
 
 XML для ввода обратно в оборот:
