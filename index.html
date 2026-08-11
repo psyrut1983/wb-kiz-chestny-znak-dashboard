@@ -691,8 +691,7 @@ function buildWithdrawXml(entity, rows){
   return `<?xml version="1.0" encoding="UTF-8"?>
 <withdrawal version="8">
  <trade_participant_inn>${xmlText(entity.inn)}</trade_participant_inn>
- <withdrawal_type>OTHER</withdrawal_type>
- <withdrawal_type_other>Продажа товара на маркетплейсе Wildberries</withdrawal_type_other>
+ <withdrawal_type>DISTANCE</withdrawal_type>
  <withdrawal_date>${date}</withdrawal_date>
  <primary_document_type>OTHER</primary_document_type>
  <primary_document_date>${date}</primary_document_date>
@@ -710,7 +709,7 @@ function buildIntroduceXml(entity, rows){
   return `<?xml version="1.0" encoding="UTF-8"?>
 <return version="1">
  <trade_participant_inn>${xmlText(entity.inn)}</trade_participant_inn>
- <return_type>OWN_USE_RETURN</return_type>
+ <return_type>REMOTE_SALE_RETURN</return_type>
  <products_list>
 ${products}
  </products_list>
