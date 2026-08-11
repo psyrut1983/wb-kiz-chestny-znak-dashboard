@@ -319,6 +319,12 @@ function xmlText(value){
     .replace(/'/g, '&apos;');
 }
 
+function primaryDocumentNumber(entity, operation, date){
+  const inn = normalize(entity && entity.inn).replace(/\D/g, '') || 'NOINN';
+  const time = new Date().toISOString().slice(11, 19).replaceAll(':', '');
+  return `WB-FBS-${operation}-${inn}-${date.replaceAll('-', '')}-${time}`;
+}
+
 function cdata(value){
   return normalize(value).replaceAll(']]>', ']]]]><![CDATA[>');
 }
@@ -685,6 +691,7 @@ function toggleAll(kind){
 
 function buildWithdrawXml(entity, rows){
   const date = todayIso();
+  const documentNumber = primaryDocumentNumber(entity, 'OUT', date);
   const products = rows.map(row => `  <product>
    <cis><![CDATA[${cdata(row['КИЗ / SGTIN'])}]]></cis>
   </product>`).join('\n');
@@ -695,6 +702,7 @@ function buildWithdrawXml(entity, rows){
  <withdrawal_type_other>Дистанционная продажа</withdrawal_type_other>
  <withdrawal_date>${date}</withdrawal_date>
  <primary_document_type>OTHER</primary_document_type>
+ <primary_document_number>${xmlText(documentNumber)}</primary_document_number>
  <primary_document_date>${date}</primary_document_date>
  <primary_document_custom_name>Документ реализации</primary_document_custom_name>
  <products_list>
@@ -704,6 +712,8 @@ ${products}
 }
 
 function buildIntroduceXml(entity, rows){
+  const date = todayIso();
+  const documentNumber = primaryDocumentNumber(entity, 'RETURN', date);
   const products = rows.map(row => `  <product>
    <ki><![CDATA[${cdata(row['КИЗ / SGTIN'])}]]></ki>
   </product>`).join('\n');
@@ -711,6 +721,7 @@ function buildIntroduceXml(entity, rows){
 <return version="1">
  <trade_participant_inn>${xmlText(entity.inn)}</trade_participant_inn>
  <return_type>REMOTE_SALE_RETURN</return_type>
+ <primary_document_number>${xmlText(documentNumber)}</primary_document_number>
  <products_list>
 ${products}
  </products_list>
