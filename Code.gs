@@ -419,50 +419,244 @@ function updateWbTokenManual() {
     return null;
   }
 
-  const entity = chooseEntityForTokenUpdate_(ui, entities);
-  if (!entity) return null;
-
-  const tokenPrompt = ui.prompt(
-    'Обновить WB API токен',
-    'Вставь новый токен для "' + entity.legalName + '". Нужны категории Marketplace и Аналитика.',
-    ui.ButtonSet.OK_CANCEL
-  );
-  if (tokenPrompt.getSelectedButton() !== ui.Button.OK) return null;
-
-  const token = String(tokenPrompt.getResponseText() || '').trim();
-  if (!token) {
-    ui.alert('Токен пустой. Старый токен не изменён.');
-    return null;
-  }
-
-  const check = checkWbToken_(token);
-  if (!check.ok) {
-    ui.alert('Токен не прошёл проверку. Старый токен не изменён.\n\n' + check.errors.join('\n'));
-    return { updated: false, errors: check.errors };
-  }
-
-  writeWbToken_(entity.entityId, token);
-  updateSettingsSyncStatus_(entity.entityId, 'WB токен обновлён и проверен: Marketplace + Аналитика');
-  ui.alert('Готово: WB токен обновлён и проверен для "' + entity.legalName + '".');
-  return { updated: true, entityId: entity.entityId };
+  const html = HtmlService
+    .createHtmlOutput(buildWbTokenDialogHtml_(entities))
+    .setWidth(520)
+    .setHeight(520);
+  ui.showModalDialog(html, 'Обновить WB API токен');
+  return { opened: true, entities: entities.length };
 }
 
-function chooseEntityForTokenUpdate_(ui, entities) {
-  if (entities.length === 1) return entities[0];
-  const list = entities.map(entity => entity.entityId + ' — ' + entity.legalName).join('\n');
-  const prompt = ui.prompt(
-    'Для какого юрлица обновить токен?',
-    'Введи ID юрлица из списка:\n' + list,
-    ui.ButtonSet.OK_CANCEL
-  );
-  if (prompt.getSelectedButton() !== ui.Button.OK) return null;
-  const value = String(prompt.getResponseText() || '').trim().toLowerCase();
-  const entity = entities.find(item =>
-    String(item.entityId || '').toLowerCase() === value ||
-    String(item.legalName || '').toLowerCase() === value
-  );
-  if (!entity) ui.alert('Юрлицо не найдено. Токен не изменён.');
-  return entity || null;
+function updateWbTokenForEntity(entityId, token) {
+  setupWorkbook_();
+  const normalizedEntityId = String(entityId || '').trim();
+  const normalizedToken = String(token || '').trim();
+  const entity = readSettings_()
+    .filter(item => item.isActive)
+    .find(item => String(item.entityId || '') === normalizedEntityId);
+
+  if (!entity) throw new Error('Юрлицо не найдено. Токен не изменён.');
+  if (!normalizedToken) throw new Error('Токен пустой. Старый токен не изменён.');
+
+  const check = checkWbToken_(normalizedToken);
+  if (!check.ok) {
+    throw new Error('Токен не прошёл проверку. Старый токен не изменён.\n\n' + check.errors.join('\n'));
+  }
+
+  writeWbToken_(entity.entityId, normalizedToken);
+  updateSettingsSyncStatus_(entity.entityId, 'WB токен обновлён и проверен: Marketplace + Аналитика');
+  return {
+    updated: true,
+    entityId: entity.entityId,
+    legalName: entity.legalName,
+    message: 'Готово: WB токен обновлён и проверен для "' + entity.legalName + '".'
+  };
+}
+
+function buildWbTokenDialogHtml_(entities) {
+  const options = entities.map(entity => ({
+    id: String(entity.entityId || ''),
+    name: String(entity.legalName || entity.entityId || ''),
+    inn: String(entity.inn || '')
+  }));
+  const entitiesJson = JSON.stringify(options).replace(/</g, '\\u003c');
+  return `<!doctype html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    body {
+      margin: 0;
+      padding: 22px;
+      font: 14px/1.45 Arial, sans-serif;
+      color: #202124;
+      background: #fff;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 22px;
+      font-weight: 500;
+    }
+    .muted {
+      color: #5f6368;
+      margin-bottom: 16px;
+    }
+    .entities {
+      display: grid;
+      gap: 8px;
+      margin-bottom: 18px;
+    }
+    .entity {
+      border: 1px solid #dadce0;
+      border-radius: 6px;
+      background: #fff;
+      cursor: pointer;
+      padding: 12px 14px;
+      text-align: left;
+      transition: border-color .12s ease, background .12s ease;
+    }
+    .entity:hover,
+    .entity.selected {
+      border-color: #1a73e8;
+      background: #f1f7ff;
+    }
+    .entity-name {
+      display: block;
+      font-size: 15px;
+      font-weight: 600;
+      margin-bottom: 2px;
+    }
+    .entity-meta {
+      color: #5f6368;
+      font-size: 12px;
+    }
+    label {
+      display: block;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+    textarea {
+      box-sizing: border-box;
+      width: 100%;
+      min-height: 104px;
+      resize: vertical;
+      border: 1px solid #dadce0;
+      border-radius: 6px;
+      padding: 10px;
+      font: 13px/1.4 Arial, sans-serif;
+    }
+    textarea:focus {
+      border-color: #1a73e8;
+      outline: none;
+      box-shadow: 0 0 0 1px #1a73e8;
+    }
+    .status {
+      min-height: 20px;
+      margin-top: 10px;
+      color: #5f6368;
+      white-space: pre-wrap;
+    }
+    .status.error {
+      color: #b3261e;
+    }
+    .status.ok {
+      color: #137333;
+    }
+    .actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 18px;
+    }
+    button {
+      border: 1px solid #dadce0;
+      border-radius: 4px;
+      background: #fff;
+      color: #1a73e8;
+      cursor: pointer;
+      font: 500 14px Arial, sans-serif;
+      min-height: 36px;
+      padding: 0 16px;
+    }
+    button.primary {
+      border-color: #1a73e8;
+      background: #1a73e8;
+      color: #fff;
+    }
+    button:disabled {
+      cursor: default;
+      opacity: .55;
+    }
+  </style>
+</head>
+<body>
+  <h1>Выбери юрлицо</h1>
+  <div class="muted">Нажми на название, вставь новый WB API токен и запусти проверку.</div>
+  <div class="entities" id="entities"></div>
+
+  <label for="token">Новый WB API токен</label>
+  <textarea id="token" autocomplete="off" spellcheck="false" placeholder="Вставь токен с категориями Marketplace и Аналитика"></textarea>
+  <div class="status" id="status"></div>
+
+  <div class="actions">
+    <button type="button" onclick="google.script.host.close()">Отмена</button>
+    <button class="primary" type="button" id="saveBtn" onclick="saveToken()">Проверить и сохранить</button>
+  </div>
+
+  <script>
+    const entities = ${entitiesJson};
+    let selectedEntityId = entities.length === 1 ? entities[0].id : '';
+
+    function renderEntities() {
+      const root = document.getElementById('entities');
+      root.innerHTML = entities.map(entity => {
+        const selected = entity.id === selectedEntityId ? ' selected' : '';
+        const meta = entity.inn ? 'ИНН ' + escapeHtml(entity.inn) : 'ИНН не заполнен';
+        return '<button type="button" class="entity' + selected + '" onclick="selectEntity(' + JSON.stringify(entity.id).replace(/"/g, '&quot;') + ')">'
+          + '<span class="entity-name">' + escapeHtml(entity.name) + '</span>'
+          + '<span class="entity-meta">' + meta + '</span>'
+          + '</button>';
+      }).join('');
+    }
+
+    function selectEntity(id) {
+      selectedEntityId = id;
+      setStatus('', '');
+      renderEntities();
+      document.getElementById('token').focus();
+    }
+
+    function saveToken() {
+      const token = document.getElementById('token').value.trim();
+      if (!selectedEntityId) {
+        setStatus('Сначала выбери юрлицо.', 'error');
+        return;
+      }
+      if (!token) {
+        setStatus('Вставь новый токен.', 'error');
+        return;
+      }
+
+      setBusy(true);
+      setStatus('Проверяю токен в WB...', '');
+      google.script.run
+        .withSuccessHandler(result => {
+          setBusy(false);
+          setStatus(result.message || 'Токен обновлён.', 'ok');
+        })
+        .withFailureHandler(error => {
+          setBusy(false);
+          setStatus(error && error.message ? error.message : String(error), 'error');
+        })
+        .updateWbTokenForEntity(selectedEntityId, token);
+    }
+
+    function setBusy(isBusy) {
+      document.getElementById('saveBtn').disabled = isBusy;
+      document.getElementById('token').disabled = isBusy;
+      document.querySelectorAll('.entity').forEach(button => button.disabled = isBusy);
+    }
+
+    function setStatus(message, kind) {
+      const status = document.getElementById('status');
+      status.textContent = message;
+      status.className = 'status' + (kind ? ' ' + kind : '');
+    }
+
+    function escapeHtml(value) {
+      return String(value || '').replace(/[&<>"']/g, char => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+      }[char]));
+    }
+
+    renderEntities();
+  </script>
+</body>
+</html>`;
 }
 
 function checkWbToken_(token) {
