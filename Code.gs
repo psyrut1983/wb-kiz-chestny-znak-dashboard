@@ -172,6 +172,15 @@ const LOG_KEYS = [
   'periodFrom',
   'periodTo',
   'rowsLoaded',
+  'excisePeriodFrom',
+  'excisePeriodTo',
+  'exciseRows',
+  'exciseSridKeys',
+  'exciseKiKeys',
+  'withdrawRowsChecked',
+  'fiscalMatchedRows',
+  'fiscalUpdatedRows',
+  'loadedRowsWithFiscalData',
   'newRows',
   'duplicateRows',
   'withdrawNewRows',
@@ -189,6 +198,15 @@ const LOG_HEADERS = [
   'Период с',
   'Период по',
   'КИЗов найдено',
+  'Период отчёта маркировки с',
+  'Период отчёта маркировки по',
+  'Строк отчёта маркировки WB',
+  'Ключей SRID в отчёте',
+  'Ключей КИ в отчёте',
+  'Строк к выводу проверено',
+  'Совпало строк по фискальным данным',
+  'Обновлено строк фискальными данными',
+  'Новых строк уже с фискальными данными',
   'Новых строк',
   'Дублей',
   'Новых к выводу',
@@ -705,8 +723,41 @@ function refreshFiscalDataManual() {
   let updatedEntities = 0;
   entities.forEach(entity => {
     validateEntity_(entity);
-    const exciseRows = fetchWbExciseRowsSafely_(entity, period);
-    updateExistingFiscalData_(entity, buildExciseIndex_(exciseRows));
+    const startedAt = now_();
+    const reportPeriod = getExciseReportPeriod_(entity, period);
+    const exciseResult = fetchWbExciseRowsResult_(entity, period);
+    const exciseRows = exciseResult.rows;
+    const exciseIndex = buildExciseIndex_(exciseRows);
+    const fiscalStats = updateExistingFiscalData_(entity, exciseIndex);
+    const fiscalMessage = exciseResult.error
+      ? 'Чеки/цены WB: ошибка загрузки отчёта маркировки. ' + exciseResult.error
+      : buildFiscalSyncMessage_(exciseRows.length, fiscalStats);
+    appendLog_({
+      startedAt,
+      finishedAt: now_(),
+      entityId: entity.entityId,
+      legalName: entity.legalName,
+      periodFrom: period.fromText,
+      periodTo: period.toText,
+      rowsLoaded: '',
+      excisePeriodFrom: reportPeriod.dateFrom,
+      excisePeriodTo: reportPeriod.dateTo,
+      exciseRows: exciseRows.length,
+      exciseSridKeys: Object.keys(exciseIndex.bySrid).length,
+      exciseKiKeys: Object.keys(exciseIndex.byKi).length,
+      withdrawRowsChecked: fiscalStats.rowsChecked,
+      fiscalMatchedRows: fiscalStats.matchedRows,
+      fiscalUpdatedRows: fiscalStats.updatedRows,
+      loadedRowsWithFiscalData: '',
+      newRows: '',
+      duplicateRows: '',
+      withdrawNewRows: '',
+      introduceNewRows: '',
+      errors: exciseResult.error ? 1 : 0,
+      status: exciseResult.error ? 'PARTIAL' : 'OK',
+      message: fiscalMessage
+    });
+    updateSettingsSyncStatus_(entity.entityId, fiscalMessage);
     updatedEntities += 1;
   });
   SpreadsheetApp.getActive().toast('Чеки и цены WB догружены для юрлиц: ' + updatedEntities, 'WB КИЗы', 8);
@@ -781,23 +832,54 @@ function syncEntity_(entity, period) {
   let duplicateRows = 0;
   let withdrawNewRows = 0;
   let introduceNewRows = 0;
+  let reportPeriod = getExciseReportPeriod_(entity, period);
+  let exciseRowsCount = 0;
+  let exciseSridKeys = 0;
+  let exciseKiKeys = 0;
+  let withdrawRowsChecked = 0;
+  let fiscalMatchedRows = 0;
+  let fiscalUpdatedRows = 0;
+  let loadedRowsWithFiscalData = 0;
   let errorCount = 0;
   let status = 'OK';
   let message = '';
 
   try {
     validateEntity_(entity);
-    const exciseRows = fetchWbExciseRowsSafely_(entity, period);
+    const exciseResult = fetchWbExciseRowsResult_(entity, period);
+    const exciseRows = exciseResult.rows;
+    if (exciseResult.error) {
+      errorCount += 1;
+      status = 'PARTIAL';
+      message = 'Ошибка отчёта маркировки WB: ' + exciseResult.error;
+    }
+    exciseRowsCount = exciseRows.length;
     const exciseIndex = buildExciseIndex_(exciseRows);
+    exciseSridKeys = Object.keys(exciseIndex.bySrid).length;
+    exciseKiKeys = Object.keys(exciseIndex.byKi).length;
     const loadedRows = fetchWbKizRows_(entity, period).map(row => enrichRowWithExcise_(row, exciseIndex));
-    updateExistingFiscalData_(entity, exciseIndex);
+    loadedRowsWithFiscalData = loadedRows.filter(row => row.fiscalDataSource === 'WB excise-report').length;
+    const fiscalStats = updateExistingFiscalData_(entity, exciseIndex);
+    withdrawRowsChecked = fiscalStats.rowsChecked;
+    fiscalMatchedRows = fiscalStats.matchedRows;
+    fiscalUpdatedRows = fiscalStats.updatedRows;
     rowsLoaded = loadedRows.length;
     const result = appendNewDataRows_(entity, loadedRows);
     newRows = result.newRows;
     duplicateRows = result.duplicateRows;
     withdrawNewRows = result.withdrawNewRows;
     introduceNewRows = result.introduceNewRows;
-    updateSettingsSyncStatus_(entity.entityId, 'Успешно: к выводу ' + withdrawNewRows + ', к вводу ' + introduceNewRows + ', дублей ' + duplicateRows);
+    updateSettingsSyncStatus_(
+      entity.entityId,
+      'Успешно: к выводу ' + withdrawNewRows
+        + ', к вводу ' + introduceNewRows
+        + ', дублей ' + duplicateRows
+        + '. ' + (exciseResult.error ? message : buildFiscalSyncMessage_(exciseRowsCount, {
+          rowsChecked: withdrawRowsChecked,
+          matchedRows: fiscalMatchedRows,
+          updatedRows: fiscalUpdatedRows
+        }))
+    );
   } catch (err) {
     status = 'ERROR';
     errorCount = 1;
@@ -813,6 +895,15 @@ function syncEntity_(entity, period) {
       periodFrom: period.fromText,
       periodTo: period.toText,
       rowsLoaded,
+      excisePeriodFrom: reportPeriod.dateFrom,
+      excisePeriodTo: reportPeriod.dateTo,
+      exciseRows: exciseRowsCount,
+      exciseSridKeys,
+      exciseKiKeys,
+      withdrawRowsChecked,
+      fiscalMatchedRows,
+      fiscalUpdatedRows,
+      loadedRowsWithFiscalData,
       newRows,
       duplicateRows,
       withdrawNewRows,
@@ -848,11 +939,15 @@ function validateEntity_(entity) {
 }
 
 function fetchWbExciseRowsSafely_(entity, period) {
+  return fetchWbExciseRowsResult_(entity, period).rows;
+}
+
+function fetchWbExciseRowsResult_(entity, period) {
   try {
-    return fetchWbExciseRows_(entity, period);
+    return { rows: fetchWbExciseRows_(entity, period), error: '' };
   } catch (err) {
     appendError_(entity.entityId, 'fetchExciseReport', '', '', err.message, '');
-    return [];
+    return { rows: [], error: err.message };
   }
 }
 
@@ -964,7 +1059,11 @@ function updateExistingFiscalData_(entity, exciseIndex) {
   const withdrawSheet = getOrCreateSheet_(entity.withdrawSheetName, DATA_HEADERS);
   const rows = readDataObjects_(withdrawSheet);
   let changed = false;
+  let matchedRows = 0;
+  let updatedRows = 0;
   rows.forEach(row => {
+    const matched = matchExciseForRow_(row, exciseIndex);
+    if (matched) matchedRows += 1;
     const before = JSON.stringify([
       row.czKi,
       row.unitPrice,
@@ -980,9 +1079,27 @@ function updateExistingFiscalData_(entity, exciseIndex) {
       row.fiscalDocDate,
       row.fiscalDriveNumber
     ]);
-    if (before !== after) changed = true;
+    if (before !== after) {
+      changed = true;
+      updatedRows += 1;
+    }
   });
   if (changed) rewriteDataSheet_(withdrawSheet, rows);
+  return {
+    rowsChecked: rows.length,
+    matchedRows,
+    updatedRows
+  };
+}
+
+function buildFiscalSyncMessage_(exciseRowsCount, fiscalStats) {
+  if (!exciseRowsCount) {
+    return 'Чеки/цены WB: отчёт маркировки вернул 0 строк. Проверь период, токен Аналитики и появились ли продажи в отчёте WB.';
+  }
+  if (!fiscalStats.matchedRows) {
+    return 'Чеки/цены WB: отчёт вернул ' + exciseRowsCount + ' строк, но совпадений с листом к выводу нет. Нужно сверить SRID и формат КИ.';
+  }
+  return 'Чеки/цены WB: отчёт вернул ' + exciseRowsCount + ' строк, совпало ' + fiscalStats.matchedRows + ', обновлено ' + fiscalStats.updatedRows + '.';
 }
 
 function fetchWbKizRows_(entity, period) {
@@ -1850,6 +1967,7 @@ function displayLogValue_(key, value) {
   if (key === 'status') {
     if (value === 'OK') return 'Успешно';
     if (value === 'ERROR') return 'Ошибка';
+    if (value === 'PARTIAL') return 'Частично';
   }
   return value;
 }
