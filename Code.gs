@@ -279,9 +279,8 @@ function onOpen() {
     .createMenu('WB КИЗы')
     .addItem('1. Подготовить таблицу', 'setupWorkbook')
     .addItem('2. Загрузить данные за вчера', 'syncYesterdayManual')
-    .addItem('3. Догрузить чеки и цены WB', 'refreshFiscalDataManual')
-    .addItem('4. Создать триггер 08:00', 'createDailyTrigger')
-    .addItem('Удалить триггеры WB', 'deleteDailyTriggers')
+    .addItem('3. Обновить WB API токен', 'updateWbTokenManual')
+    .addItem('4. Догрузить чеки и цены WB', 'refreshFiscalDataManual')
     .addToUi();
 }
 
@@ -409,6 +408,100 @@ function setupWorkbook_() {
 
 function syncYesterdayManual() {
   syncYesterdayAllEntities(true);
+}
+
+function updateWbTokenManual() {
+  setupWorkbook_();
+  const ui = SpreadsheetApp.getUi();
+  const entities = readSettings_().filter(entity => entity.isActive);
+  if (!entities.length) {
+    ui.alert('Нет активных юрлиц на листе "Настройки"');
+    return null;
+  }
+
+  const entity = chooseEntityForTokenUpdate_(ui, entities);
+  if (!entity) return null;
+
+  const tokenPrompt = ui.prompt(
+    'Обновить WB API токен',
+    'Вставь новый токен для "' + entity.legalName + '". Нужны категории Marketplace и Аналитика.',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (tokenPrompt.getSelectedButton() !== ui.Button.OK) return null;
+
+  const token = String(tokenPrompt.getResponseText() || '').trim();
+  if (!token) {
+    ui.alert('Токен пустой. Старый токен не изменён.');
+    return null;
+  }
+
+  const check = checkWbToken_(token);
+  if (!check.ok) {
+    ui.alert('Токен не прошёл проверку. Старый токен не изменён.\n\n' + check.errors.join('\n'));
+    return { updated: false, errors: check.errors };
+  }
+
+  writeWbToken_(entity.entityId, token);
+  updateSettingsSyncStatus_(entity.entityId, 'WB токен обновлён и проверен: Marketplace + Аналитика');
+  ui.alert('Готово: WB токен обновлён и проверен для "' + entity.legalName + '".');
+  return { updated: true, entityId: entity.entityId };
+}
+
+function chooseEntityForTokenUpdate_(ui, entities) {
+  if (entities.length === 1) return entities[0];
+  const list = entities.map(entity => entity.entityId + ' — ' + entity.legalName).join('\n');
+  const prompt = ui.prompt(
+    'Для какого юрлица обновить токен?',
+    'Введи ID юрлица из списка:\n' + list,
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (prompt.getSelectedButton() !== ui.Button.OK) return null;
+  const value = String(prompt.getResponseText() || '').trim().toLowerCase();
+  const entity = entities.find(item =>
+    String(item.entityId || '').toLowerCase() === value ||
+    String(item.legalName || '').toLowerCase() === value
+  );
+  if (!entity) ui.alert('Юрлицо не найдено. Токен не изменён.');
+  return entity || null;
+}
+
+function checkWbToken_(token) {
+  const errors = [];
+  const period = getTodayPeriod_();
+  try {
+    wbFetchJson_(
+      'https://marketplace-api.wildberries.ru/api/v3/orders?limit=1&next=0&dateFrom=' + encodeURIComponent(period.fromUnix),
+      token
+    );
+  } catch (err) {
+    errors.push('Marketplace: ' + err.message);
+  }
+
+  try {
+    const url = 'https://seller-analytics-api.wildberries.ru/api/v1/analytics/excise-report'
+      + '?dateFrom=' + encodeURIComponent(period.syncDate)
+      + '&dateTo=' + encodeURIComponent(period.syncDate);
+    wbPostJson_(url, token, { countries: ['RU'] });
+  } catch (err) {
+    errors.push('Аналитика: ' + err.message);
+  }
+
+  return { ok: errors.length === 0, errors };
+}
+
+function writeWbToken_(entityId, token) {
+  const sheet = getOrCreateSheet_(SHEETS.settings, SETTINGS_HEADERS);
+  const values = sheet.getDataRange().getValues();
+  const headers = values[0].map(String);
+  const entityIndex = findColumnIndex_(headers, SETTINGS_ALIASES.entityId);
+  const tokenIndex = findColumnIndex_(headers, SETTINGS_ALIASES.wbToken);
+  if (entityIndex === -1 || tokenIndex === -1) throw new Error('Не найдены колонки ID юрлица или WB API токен');
+  for (let i = 1; i < values.length; i++) {
+    if (String(values[i][entityIndex]) !== entityId) continue;
+    sheet.getRange(i + 1, tokenIndex + 1).setValue(token);
+    return;
+  }
+  throw new Error('Юрлицо не найдено: ' + entityId);
 }
 
 function refreshFiscalDataManual() {
