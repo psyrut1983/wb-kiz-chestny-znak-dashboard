@@ -64,6 +64,13 @@ const SETTINGS_KEYS = [
   'apiMode',
   'lastSyncAt',
   'lastSyncStatus',
+  'czReason',
+  'czDocumentType',
+  'czVersion',
+  'fiasId',
+  'kpp',
+  'wbReportCountry',
+  'exciseReportLookbackDays',
   'comment'
 ];
 
@@ -79,6 +86,13 @@ const SETTINGS_HEADERS = [
   'Режим WB API',
   'Последняя синхронизация',
   'Статус последней синхронизации',
+  'Причина вывода ЧЗ',
+  'Тип первичного документа ЧЗ',
+  'Версия CSV ЧЗ',
+  'ФИАС / МОД',
+  'КПП',
+  'Страна отчёта WB',
+  'Окно догрузки отчёта маркировки, дней',
   'Комментарий'
 ];
 
@@ -101,6 +115,18 @@ const DATA_KEYS = [
   'createdAt',
   'updatedAt',
   'dedupeKey',
+  'czKi',
+  'unitPrice',
+  'priceCurrency',
+  'fiscalDocNumber',
+  'fiscalDocDate',
+  'fiscalDriveNumber',
+  'wbSaleDate',
+  'wbSaleAmount',
+  'wbRid',
+  'wbMarkingOperationType',
+  'fiscalDataSource',
+  'fiscalDataUpdatedAt',
   'comment'
 ];
 
@@ -123,6 +149,18 @@ const DATA_HEADERS = [
   'Создано',
   'Обновлено',
   'Ключ дубля',
+  'КИ для ЧЗ',
+  'Цена за единицу',
+  'Валюта цены',
+  'Номер чека',
+  'Дата чека',
+  'Номер ФН',
+  'Дата продажи WB',
+  'Сумма продажи WB',
+  'RID WB',
+  'Тип операции маркировки WB',
+  'Источник фискальных данных',
+  'Дата обновления фискальных данных',
   'Комментарий'
 ];
 
@@ -192,6 +230,13 @@ const SETTINGS_ALIASES = {
   apiMode: ['Режим WB API', 'apiMode'],
   lastSyncAt: ['Последняя синхронизация', 'lastSyncAt'],
   lastSyncStatus: ['Статус последней синхронизации', 'lastSyncStatus'],
+  czReason: ['Причина вывода ЧЗ', 'czReason'],
+  czDocumentType: ['Тип первичного документа ЧЗ', 'czDocumentType'],
+  czVersion: ['Версия CSV ЧЗ', 'czVersion'],
+  fiasId: ['ФИАС / МОД', 'fiasId'],
+  kpp: ['КПП', 'kpp'],
+  wbReportCountry: ['Страна отчёта WB', 'wbReportCountry'],
+  exciseReportLookbackDays: ['Окно догрузки отчёта маркировки, дней', 'exciseReportLookbackDays'],
   comment: ['Комментарий', 'comment']
 };
 
@@ -214,6 +259,18 @@ const DATA_ALIASES = {
   createdAt: ['Создано', 'createdAt'],
   updatedAt: ['Обновлено', 'updatedAt'],
   dedupeKey: ['Ключ дубля', 'dedupeKey'],
+  czKi: ['КИ для ЧЗ', 'czKi'],
+  unitPrice: ['Цена за единицу', 'unitPrice'],
+  priceCurrency: ['Валюта цены', 'priceCurrency'],
+  fiscalDocNumber: ['Номер чека', 'fiscalDocNumber'],
+  fiscalDocDate: ['Дата чека', 'fiscalDocDate'],
+  fiscalDriveNumber: ['Номер ФН', 'fiscalDriveNumber'],
+  wbSaleDate: ['Дата продажи WB', 'wbSaleDate'],
+  wbSaleAmount: ['Сумма продажи WB', 'wbSaleAmount'],
+  wbRid: ['RID WB', 'wbRid'],
+  wbMarkingOperationType: ['Тип операции маркировки WB', 'wbMarkingOperationType'],
+  fiscalDataSource: ['Источник фискальных данных', 'fiscalDataSource'],
+  fiscalDataUpdatedAt: ['Дата обновления фискальных данных', 'fiscalDataUpdatedAt'],
   comment: ['Комментарий', 'comment']
 };
 
@@ -222,7 +279,8 @@ function onOpen() {
     .createMenu('WB КИЗы')
     .addItem('1. Подготовить таблицу', 'setupWorkbook')
     .addItem('2. Загрузить данные за вчера', 'syncYesterdayManual')
-    .addItem('3. Создать триггер 08:00', 'createDailyTrigger')
+    .addItem('3. Догрузить чеки и цены WB', 'refreshFiscalDataManual')
+    .addItem('4. Создать триггер 08:00', 'createDailyTrigger')
     .addItem('Удалить триггеры WB', 'deleteDailyTriggers')
     .addToUi();
 }
@@ -245,6 +303,11 @@ function getPublicDashboardData() {
         id: entity.entityId,
         legalName: entity.legalName,
         inn: entity.inn,
+        czReason: entity.czReason,
+        czDocumentType: entity.czDocumentType,
+        czVersion: entity.czVersion,
+        fiasId: entity.fiasId,
+        kpp: entity.kpp,
         lastSyncAt: entity.lastSyncAt || '',
         lastSyncStatus: entity.lastSyncStatus || '',
         withdraw: readDataObjects_(withdrawSheet).map(publicRow_),
@@ -348,6 +411,21 @@ function syncYesterdayManual() {
   syncYesterdayAllEntities(true);
 }
 
+function refreshFiscalDataManual() {
+  setupWorkbook_();
+  const period = getTodayPeriod_();
+  const entities = readSettings_().filter(entity => entity.isActive);
+  let updatedEntities = 0;
+  entities.forEach(entity => {
+    validateEntity_(entity);
+    const exciseRows = fetchWbExciseRowsSafely_(entity, period);
+    updateExistingFiscalData_(entity, buildExciseIndex_(exciseRows));
+    updatedEntities += 1;
+  });
+  SpreadsheetApp.getActive().toast('Чеки и цены WB догружены для юрлиц: ' + updatedEntities, 'WB КИЗы', 8);
+  return updatedEntities;
+}
+
 function syncYesterdayAllEntities(showToast) {
   const shouldToast = showToast === true;
   setupWorkbook_();
@@ -422,7 +500,10 @@ function syncEntity_(entity, period) {
 
   try {
     validateEntity_(entity);
-    const loadedRows = fetchWbKizRows_(entity, period);
+    const exciseRows = fetchWbExciseRowsSafely_(entity, period);
+    const exciseIndex = buildExciseIndex_(exciseRows);
+    const loadedRows = fetchWbKizRows_(entity, period).map(row => enrichRowWithExcise_(row, exciseIndex));
+    updateExistingFiscalData_(entity, exciseIndex);
     rowsLoaded = loadedRows.length;
     const result = appendNewDataRows_(entity, loadedRows);
     newRows = result.newRows;
@@ -477,6 +558,144 @@ function validateEntity_(entity) {
   if (!entity.withdrawSheetName) throw new Error(entity.entityId + ': не указан лист для КИЗов к выводу');
   if (!entity.introduceSheetName) throw new Error(entity.entityId + ': не указан лист для КИЗов к вводу');
   if (!entity.archiveSheetName) throw new Error(entity.entityId + ': не указан лист архива');
+}
+
+function fetchWbExciseRowsSafely_(entity, period) {
+  try {
+    return fetchWbExciseRows_(entity, period);
+  } catch (err) {
+    appendError_(entity.entityId, 'fetchExciseReport', '', '', err.message, '');
+    return [];
+  }
+}
+
+function fetchWbExciseRows_(entity, period) {
+  const reportPeriod = getExciseReportPeriod_(entity, period);
+  const payload = {};
+  if (entity.wbReportCountry) payload.countries = [entity.wbReportCountry];
+  const url = 'https://seller-analytics-api.wildberries.ru/api/v1/analytics/excise-report'
+    + '?dateFrom=' + encodeURIComponent(reportPeriod.dateFrom)
+    + '&dateTo=' + encodeURIComponent(reportPeriod.dateTo);
+  return extractExciseItems_(wbPostJson_(url, entity.wbToken, payload));
+}
+
+function getExciseReportPeriod_(entity, period) {
+  const lookbackDays = Math.max(1, Math.min(90, Number(entity.exciseReportLookbackDays || 14) || 14));
+  const from = new Date(period.to.getTime());
+  from.setDate(from.getDate() - lookbackDays + 1);
+  from.setHours(0, 0, 0, 0);
+  return {
+    dateFrom: Utilities.formatDate(from, TZ, 'yyyy-MM-dd'),
+    dateTo: Utilities.formatDate(period.to, TZ, 'yyyy-MM-dd')
+  };
+}
+
+function extractExciseItems_(response) {
+  if (Array.isArray(response)) return response;
+  const candidates = [
+    response && response.data,
+    response && response.data && response.data.data,
+    response && response.data && response.data.items,
+    response && response.data && response.data.report,
+    response && response.report,
+    response && response.items,
+    response && response.result,
+    response && response.rows
+  ];
+  for (let i = 0; i < candidates.length; i++) {
+    if (Array.isArray(candidates[i])) return candidates[i];
+  }
+  return [];
+}
+
+function buildExciseIndex_(items) {
+  const index = { bySrid: {}, byKi: {} };
+  items.forEach(item => {
+    const normalized = normalizeExciseItem_(item);
+    if (!normalized) return;
+    if (normalized.srid && !index.bySrid[normalized.srid]) index.bySrid[normalized.srid] = normalized;
+    if (normalized.czKi && !index.byKi[normalized.czKi]) index.byKi[normalized.czKi] = normalized;
+    if (normalized.rawKi && !index.byKi[normalized.rawKi]) index.byKi[normalized.rawKi] = normalized;
+  });
+  return index;
+}
+
+function normalizeExciseItem_(item) {
+  if (!item) return null;
+  const rawKi = String(item.excise_short || item.exciseShort || item.kiz || item.excise || '').trim();
+  const czKi = normalizeKiForCz_(rawKi);
+  const srid = String(item.srid || '').trim();
+  if (!rawKi && !srid) return null;
+  return {
+    rawKi,
+    czKi,
+    srid,
+    rid: String(item.rid || '').trim(),
+    price: item.price == null ? '' : String(item.price).trim(),
+    currency: String(item.currency_name_short || item.currencyNameShort || item.currency || '').trim(),
+    fiscalDocNumber: String(item.fiscal_doc_number || item.fiscalDocNumber || '').trim(),
+    fiscalDocDate: formatWbDateOnly_(item.fiscal_dt || item.fiscalDt || ''),
+    fiscalDriveNumber: String(item.fiscal_drive_number || item.fiscalDriveNumber || '').trim(),
+    operationType: String(item.operation_type_id || item.operationTypeId || '').trim()
+  };
+}
+
+function enrichRowWithExcise_(row, exciseIndex) {
+  const matched = matchExciseForRow_(row, exciseIndex);
+  if (!matched) {
+    row.czKi = row.czKi || normalizeKiForCz_(row.kiz);
+    return row;
+  }
+  const timestamp = now_();
+  row.czKi = matched.czKi || row.czKi || normalizeKiForCz_(row.kiz);
+  row.unitPrice = matched.price || row.unitPrice || '';
+  row.priceCurrency = matched.currency || row.priceCurrency || '';
+  row.fiscalDocNumber = matched.fiscalDocNumber || row.fiscalDocNumber || '';
+  row.fiscalDocDate = matched.fiscalDocDate || row.fiscalDocDate || '';
+  row.fiscalDriveNumber = matched.fiscalDriveNumber || row.fiscalDriveNumber || '';
+  row.wbSaleDate = matched.fiscalDocDate || row.wbSaleDate || '';
+  row.wbSaleAmount = matched.price || row.wbSaleAmount || '';
+  row.wbRid = matched.rid || row.wbRid || '';
+  row.wbMarkingOperationType = matched.operationType || row.wbMarkingOperationType || '';
+  row.fiscalDataSource = 'WB excise-report';
+  row.fiscalDataUpdatedAt = timestamp;
+  row.updatedAt = timestamp;
+  return row;
+}
+
+function matchExciseForRow_(row, exciseIndex) {
+  const srid = String(row.srid || '').trim();
+  if (srid && exciseIndex.bySrid[srid]) return exciseIndex.bySrid[srid];
+  const czKi = normalizeKiForCz_(row.kiz);
+  if (czKi && exciseIndex.byKi[czKi]) return exciseIndex.byKi[czKi];
+  const rawKi = String(row.kiz || '').trim();
+  if (rawKi && exciseIndex.byKi[rawKi]) return exciseIndex.byKi[rawKi];
+  return null;
+}
+
+function updateExistingFiscalData_(entity, exciseIndex) {
+  const withdrawSheet = getOrCreateSheet_(entity.withdrawSheetName, DATA_HEADERS);
+  const rows = readDataObjects_(withdrawSheet);
+  let changed = false;
+  rows.forEach(row => {
+    const before = JSON.stringify([
+      row.czKi,
+      row.unitPrice,
+      row.fiscalDocNumber,
+      row.fiscalDocDate,
+      row.fiscalDriveNumber
+    ]);
+    enrichRowWithExcise_(row, exciseIndex);
+    const after = JSON.stringify([
+      row.czKi,
+      row.unitPrice,
+      row.fiscalDocNumber,
+      row.fiscalDocDate,
+      row.fiscalDriveNumber
+    ]);
+    if (before !== after) changed = true;
+  });
+  if (changed) rewriteDataSheet_(withdrawSheet, rows);
 }
 
 function fetchWbKizRows_(entity, period) {
@@ -659,6 +878,18 @@ function normalizeKizRow_(entity, sourceMode, order, statusInfo, operation, kiz,
     createdAt: timestamp,
     updatedAt: timestamp,
     dedupeKey,
+    czKi: normalizeKiForCz_(kiz),
+    unitPrice: '',
+    priceCurrency: '',
+    fiscalDocNumber: '',
+    fiscalDocDate: '',
+    fiscalDriveNumber: '',
+    wbSaleDate: '',
+    wbSaleAmount: '',
+    wbRid: '',
+    wbMarkingOperationType: '',
+    fiscalDataSource: '',
+    fiscalDataUpdatedAt: '',
     comment: ''
   };
 }
@@ -878,6 +1109,7 @@ function publicRow_(row) {
   return {
     key: publicRowKey_(row),
     kiz: String(row.kiz || ''),
+    czKi: String(row.czKi || normalizeKiForCz_(row.kiz) || ''),
     article: String(row.article || ''),
     barcode: String(row.barcode || ''),
     orderId: String(row.orderId || ''),
@@ -885,6 +1117,17 @@ function publicRow_(row) {
     supplierStatus: String(row.supplierStatus || ''),
     wbStatus: String(row.wbStatus || ''),
     wbDate: formatMaybeDate_(row.wbDate),
+    unitPrice: String(row.unitPrice || ''),
+    priceCurrency: String(row.priceCurrency || ''),
+    fiscalDocNumber: String(row.fiscalDocNumber || ''),
+    fiscalDocDate: formatMaybeDate_(row.fiscalDocDate),
+    fiscalDriveNumber: String(row.fiscalDriveNumber || ''),
+    wbSaleDate: formatMaybeDate_(row.wbSaleDate),
+    wbSaleAmount: String(row.wbSaleAmount || ''),
+    wbRid: String(row.wbRid || ''),
+    wbMarkingOperationType: String(row.wbMarkingOperationType || ''),
+    fiscalDataSource: String(row.fiscalDataSource || ''),
+    fiscalDataUpdatedAt: formatMaybeDate_(row.fiscalDataUpdatedAt),
     status: String(row.status || ''),
     source: String(row.source || ''),
     syncDate: formatMaybeDate_(row.syncDate),
@@ -987,6 +1230,13 @@ function ensureSettingsSheet_() {
       apiMode: row.apiMode || 'fbs',
       lastSyncAt: row.lastSyncAt || '',
       lastSyncStatus: row.lastSyncStatus || '',
+      czReason: row.czReason || 'Дистанционная продажа',
+      czDocumentType: row.czDocumentType || 'Кассовый чек',
+      czVersion: row.czVersion || '7',
+      fiasId: row.fiasId || '',
+      kpp: row.kpp || '',
+      wbReportCountry: row.wbReportCountry || 'RU',
+      exciseReportLookbackDays: row.exciseReportLookbackDays || '14',
       comment: row.comment || ''
     };
   });
@@ -1008,6 +1258,13 @@ function ensureSettingsSheet_() {
       apiMode: row.apiMode || 'fbs',
       lastSyncAt: row.lastSyncAt || '',
       lastSyncStatus: row.lastSyncStatus || '',
+      czReason: row.czReason || 'Дистанционная продажа',
+      czDocumentType: row.czDocumentType || 'Кассовый чек',
+      czVersion: row.czVersion || '7',
+      fiasId: row.fiasId || '',
+      kpp: row.kpp || '',
+      wbReportCountry: row.wbReportCountry || 'RU',
+      exciseReportLookbackDays: row.exciseReportLookbackDays || '14',
       comment: row.comment || ''
     });
   });
@@ -1032,7 +1289,14 @@ function ensureSettingsSheet_() {
     withdrawSheetName: String(row.withdrawSheetName || '').trim(),
     introduceSheetName: String(row.introduceSheetName || '').trim(),
     archiveSheetName: String(row.archiveSheetName || '').trim(),
-    apiMode: String(row.apiMode || 'auto').trim() || 'auto'
+    apiMode: String(row.apiMode || 'auto').trim() || 'auto',
+    czReason: String(row.czReason || 'Дистанционная продажа').trim(),
+    czDocumentType: String(row.czDocumentType || 'Кассовый чек').trim(),
+    czVersion: String(row.czVersion || '7').trim(),
+    fiasId: String(row.fiasId || '').trim(),
+    kpp: String(row.kpp || '').trim(),
+    wbReportCountry: String(row.wbReportCountry || 'RU').trim() || 'RU',
+    exciseReportLookbackDays: String(row.exciseReportLookbackDays || '14').trim() || '14'
   }));
 }
 
@@ -1064,7 +1328,14 @@ function readSettings_() {
       archiveSheetName: buildEntitySheetName_(row.legalName || row.entityId, 'archive'),
       apiMode: String(row.apiMode || 'auto').trim() || 'auto',
       lastSyncAt: formatMaybeDate_(row.lastSyncAt),
-      lastSyncStatus: String(row.lastSyncStatus || '').trim()
+      lastSyncStatus: String(row.lastSyncStatus || '').trim(),
+      czReason: String(row.czReason || 'Дистанционная продажа').trim(),
+      czDocumentType: String(row.czDocumentType || 'Кассовый чек').trim(),
+      czVersion: String(row.czVersion || '7').trim(),
+      fiasId: String(row.fiasId || '').trim(),
+      kpp: String(row.kpp || '').trim(),
+      wbReportCountry: String(row.wbReportCountry || 'RU').trim() || 'RU',
+      exciseReportLookbackDays: String(row.exciseReportLookbackDays || '14').trim() || '14'
     }));
 }
 
@@ -1109,6 +1380,23 @@ function getYesterdayPeriod_() {
   from.setDate(from.getDate() - 1);
   from.setHours(0, 0, 0, 0);
   const to = new Date(from);
+  to.setHours(23, 59, 59, 999);
+  return {
+    from,
+    to,
+    fromUnix: Math.floor(from.getTime() / 1000),
+    toUnix: Math.floor(to.getTime() / 1000),
+    fromText: formatDate_(from),
+    toText: formatDate_(to),
+    syncDate: Utilities.formatDate(from, TZ, 'yyyy-MM-dd')
+  };
+}
+
+function getTodayPeriod_() {
+  const now = new Date();
+  const from = new Date(now);
+  from.setHours(0, 0, 0, 0);
+  const to = new Date(now);
   to.setHours(23, 59, 59, 999);
   return {
     from,
@@ -1219,6 +1507,15 @@ function uniqueStrings_(values) {
     });
 }
 
+function normalizeKiForCz_(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  if (text.length >= 31 && text.slice(0, 2) === '01' && text.slice(16, 18) === '21') {
+    return text.slice(0, 31);
+  }
+  return text;
+}
+
 function settingsValues_(row) {
   return SETTINGS_KEYS.map(key => {
     if (key === 'isActive') return parseActiveValue_(row[key]) ? 'Да' : 'Нет';
@@ -1278,6 +1575,7 @@ function displayErrorStep_(step) {
   if (raw.indexOf('fetchCompletedOrders:') === 0) return 'Загрузка заказов WB (' + raw.split(':')[1].toUpperCase() + ')';
   if (raw.indexOf('fetchOrdersStatusBulk:') === 0) return 'Загрузка статусов WB (' + raw.split(':')[1].toUpperCase() + ')';
   if (raw.indexOf('fetchOrdersMetaBulk:') === 0) return 'Загрузка КИЗов WB (' + raw.split(':')[1].toUpperCase() + ')';
+  if (raw === 'fetchExciseReport') return 'Загрузка отчёта WB по маркировке';
   if (raw === 'introduceWithoutArchive') return 'КИЗ к вводу не найден в архиве';
   return raw;
 }
@@ -1319,4 +1617,13 @@ function formatMaybeDate_(value) {
     return formatDate_(value);
   }
   return String(value).trim();
+}
+
+function formatWbDateOnly_(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  const date = new Date(text);
+  if (!Number.isNaN(date.getTime())) return Utilities.formatDate(date, TZ, 'yyyy-MM-dd');
+  const match = text.match(/\d{4}-\d{2}-\d{2}/);
+  return match ? match[0] : text;
 }

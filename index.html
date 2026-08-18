@@ -214,7 +214,12 @@ const SETTINGS_HEADERS = {
   introduceSheet: 'Лист: КИЗы к вводу',
   archiveSheet: 'Лист: архив выведенных КИЗов',
   lastSyncAt: 'Последняя синхронизация',
-  lastSyncStatus: 'Статус последней синхронизации'
+  lastSyncStatus: 'Статус последней синхронизации',
+  czReason: 'Причина вывода ЧЗ',
+  czDocumentType: 'Тип первичного документа ЧЗ',
+  czVersion: 'Версия CSV ЧЗ',
+  fiasId: 'ФИАС / МОД',
+  kpp: 'КПП'
 };
 
 const DATA_HEADERS = [
@@ -236,6 +241,18 @@ const DATA_HEADERS = [
   'Создано',
   'Обновлено',
   'Ключ дубля',
+  'КИ для ЧЗ',
+  'Цена за единицу',
+  'Валюта цены',
+  'Номер чека',
+  'Дата чека',
+  'Номер ФН',
+  'Дата продажи WB',
+  'Сумма продажи WB',
+  'RID WB',
+  'Тип операции маркировки WB',
+  'Источник фискальных данных',
+  'Дата обновления фискальных данных',
   'Комментарий'
 ];
 
@@ -323,6 +340,18 @@ function primaryDocumentNumber(entity, operation, date){
   const inn = normalize(entity && entity.inn).replace(/\D/g, '') || 'NOINN';
   const time = new Date().toISOString().slice(11, 19).replaceAll(':', '');
   return `WB-FBS-${operation}-${inn}-${date.replaceAll('-', '')}-${time}`;
+}
+
+function normalizeKiForCz(value){
+  const text = normalize(value);
+  if(text.length >= 31 && text.slice(0, 2) === '01' && text.slice(16, 18) === '21') return text.slice(0, 31);
+  return text;
+}
+
+function csvDate(value){
+  const text = normalize(value);
+  const match = text.match(/\d{4}-\d{2}-\d{2}/);
+  return match ? match[0] : text;
 }
 
 function cdata(value){
@@ -503,7 +532,7 @@ async function loadFromSheets(){
   setBusy(true);
   try{
     state.spreadsheetId = normalize(el.spreadsheetId.value) || DEFAULT_SPREADSHEET_ID;
-    const settingsValues = await readRange(`${quoteSheet(SETTINGS_SHEET)}!A1:L20`);
+    const settingsValues = await readRange(`${quoteSheet(SETTINGS_SHEET)}!A1:Z20`);
     const entities = parseSettings(settingsValues);
     for(const entity of entities){
       await loadEntitySheets(entity);
@@ -543,6 +572,11 @@ function parseSettings(values){
       archiveSheet: normalize(row[map.get(SETTINGS_HEADERS.archiveSheet)]) || `${legalName} - Архив выведенных КИЗов`,
       lastSyncAt: normalize(row[map.get(SETTINGS_HEADERS.lastSyncAt)]),
       lastSyncStatus: normalize(row[map.get(SETTINGS_HEADERS.lastSyncStatus)]),
+      czReason: normalize(row[map.get(SETTINGS_HEADERS.czReason)]) || 'Дистанционная продажа',
+      czDocumentType: normalize(row[map.get(SETTINGS_HEADERS.czDocumentType)]) || 'Кассовый чек',
+      czVersion: normalize(row[map.get(SETTINGS_HEADERS.czVersion)]) || '7',
+      fiasId: normalize(row[map.get(SETTINGS_HEADERS.fiasId)]),
+      kpp: normalize(row[map.get(SETTINGS_HEADERS.kpp)]),
       withdraw: {headers: DATA_HEADERS, rows: []},
       introduce: {headers: DATA_HEADERS, rows: []},
       archive: {headers: DATA_HEADERS, rows: []}
@@ -552,9 +586,9 @@ function parseSettings(values){
 
 async function loadEntitySheets(entity){
   const [withdrawValues, introduceValues, archiveValues] = await Promise.all([
-    readRange(`${quoteSheet(entity.withdrawSheet)}!A1:S10000`),
-    readRange(`${quoteSheet(entity.introduceSheet)}!A1:S10000`),
-    readRange(`${quoteSheet(entity.archiveSheet)}!A1:S10000`)
+    readRange(`${quoteSheet(entity.withdrawSheet)}!A1:AZ10000`),
+    readRange(`${quoteSheet(entity.introduceSheet)}!A1:AZ10000`),
+    readRange(`${quoteSheet(entity.archiveSheet)}!A1:AZ10000`)
   ]);
   entity.withdraw = rowsToObjects(withdrawValues);
   entity.introduce = rowsToObjects(introduceValues);
@@ -597,7 +631,7 @@ function renderSelectedEntity(){
     return;
   }
   el.selectedTitle.textContent = entity.legalName;
-  el.selectedMeta.textContent = `ИНН ${entity.inn || 'не указан'} · Google Sheets`;
+  el.selectedMeta.textContent = `ИНН ${entity.inn || 'не указан'} · ФИАС ${entity.fiasId || 'не указан'} · Google Sheets`;
 }
 
 function renderPanel(kind){
@@ -620,6 +654,9 @@ function renderPanel(kind){
     const meta = [
       row['Артикул'] ? `арт. ${row['Артикул']}` : '',
       row['ID заказа WB'] ? `заказ ${row['ID заказа WB']}` : '',
+      row['Цена за единицу'] ? `цена ${row['Цена за единицу']}` : '',
+      row['Номер чека'] ? `чек ${row['Номер чека']}` : '',
+      row['Дата чека'] || '',
       row['Статус WB'] || ''
     ].filter(Boolean).join(' · ');
     return `<label class="row">
@@ -700,14 +737,29 @@ function csvLine(values){
 }
 
 function orderDocumentNumber(row, fallback){
-  return normalize(row['ID заказа WB']) || fallback;
+  return normalize(row['Номер чека']) || normalize(row['ID заказа WB']) || fallback;
+}
+
+function missingWithdrawFields(entity, rows){
+  const missing = [];
+  if(!normalize(entity.inn)) missing.push('ИНН');
+  if(!normalize(entity.fiasId)) missing.push('ФИАС / МОД');
+  rows.forEach((row, index) => {
+    const label = `строка ${index + 1}`;
+    if(!normalize(row['КИ для ЧЗ'] || row['КИЗ / SGTIN'])) missing.push(`${label}: КИ`);
+    if(!normalize(row['Цена за единицу'])) missing.push(`${label}: цена`);
+    if(!normalize(row['Номер чека'])) missing.push(`${label}: номер чека`);
+    if(!normalize(row['Дата чека'])) missing.push(`${label}: дата чека`);
+  });
+  return missing;
 }
 
 function buildWithdrawCsv(entity, rows){
   const date = todayIso();
   const fallbackDocumentNumber = primaryDocumentNumber(entity, 'OUT', date);
-  const uniqueOrderIds = Array.from(new Set(rows.map(row => normalize(row['ID заказа WB'])).filter(Boolean)));
-  const headerDocumentNumber = uniqueOrderIds.length === 1 ? uniqueOrderIds[0] : fallbackDocumentNumber;
+  const documentType = normalize(entity.czDocumentType) || 'Кассовый чек';
+  const reason = normalize(entity.czReason) || 'Дистанционная продажа';
+  const version = normalize(entity.czVersion) || '7';
   const lines = [
     csvLine([
       'ИНН участника оборота',
@@ -726,16 +778,16 @@ function buildWithdrawCsv(entity, rows){
     csvLine([
       entity.inn,
       '',
-      'Другое',
-      'Дистанционная продажа',
+      reason,
+      reason === 'Другое' ? 'Дистанционная продажа' : '',
       date,
-      'Прочее',
-      headerDocumentNumber,
-      date,
-      'заказ (отправление)',
+      documentType,
       '',
       '',
-      '7'
+      documentType === 'Прочее' ? 'заказ (отправление)' : '',
+      entity.fiasId || '',
+      '',
+      version
     ]),
     'Параметры товаров',
     csvLine([
@@ -747,15 +799,15 @@ function buildWithdrawCsv(entity, rows){
       'Наименование первичного документа'
     ]),
     ...rows.map(row => csvLine([
-      row['КИЗ / SGTIN'],
-      '',
-      'Прочее',
+      normalize(row['КИ для ЧЗ']) || normalizeKiForCz(row['КИЗ / SGTIN']),
+      row['Цена за единицу'],
+      documentType,
       orderDocumentNumber(row, fallbackDocumentNumber),
-      date,
-      'заказ (отправление)'
+      csvDate(row['Дата чека']) || date,
+      documentType === 'Прочее' ? 'заказ (отправление)' : ''
     ]))
   ];
-  return '\ufeff' + lines.join('\r\n') + '\r\n';
+  return lines.join('\n');
 }
 
 function buildIntroduceXml(entity, rows){
@@ -786,6 +838,13 @@ function downloadXml(kind){
   if(rows.some(row => !normalize(row['КИЗ / SGTIN']))){
     toast('В выбранных строках есть пустой КИЗ', 'error');
     return;
+  }
+  if(kind === 'withdraw'){
+    const missing = missingWithdrawFields(entity, rows);
+    if(missing.length){
+      toast(`CSV не готов: ${missing.slice(0, 3).join(', ')}${missing.length > 3 ? '...' : ''}`, 'error');
+      return;
+    }
   }
   const content = kind === 'withdraw' ? buildWithdrawCsv(entity, rows) : buildIntroduceXml(entity, rows);
   const operation = kind === 'withdraw' ? 'Вывод_из_оборота' : 'Возврат_в_оборот';
