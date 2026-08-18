@@ -724,14 +724,15 @@ function refreshFiscalDataManual() {
   entities.forEach(entity => {
     validateEntity_(entity);
     const startedAt = now_();
-    const reportPeriod = getExciseReportPeriod_(entity, period);
     const exciseResult = fetchWbExciseRowsResult_(entity, period);
+    const reportPeriod = exciseResult.reportPeriod || getExciseReportPeriod_(entity, period);
     const exciseRows = exciseResult.rows;
     const exciseIndex = buildExciseIndex_(exciseRows);
     const fiscalStats = updateExistingFiscalData_(entity, exciseIndex);
-    const fiscalMessage = exciseResult.error
+    let fiscalMessage = exciseResult.error
       ? 'Чеки/цены WB: ошибка загрузки отчёта маркировки. ' + exciseResult.error
       : buildFiscalSyncMessage_(exciseRows.length, fiscalStats);
+    if (exciseResult.attempts) fiscalMessage += ' Попытки: ' + exciseResult.attempts + '.';
     appendLog_({
       startedAt,
       finishedAt: now_(),
@@ -847,6 +848,7 @@ function syncEntity_(entity, period) {
   try {
     validateEntity_(entity);
     const exciseResult = fetchWbExciseRowsResult_(entity, period);
+    reportPeriod = exciseResult.reportPeriod || reportPeriod;
     const exciseRows = exciseResult.rows;
     if (exciseResult.error) {
       errorCount += 1;
@@ -878,7 +880,7 @@ function syncEntity_(entity, period) {
           rowsChecked: withdrawRowsChecked,
           matchedRows: fiscalMatchedRows,
           updatedRows: fiscalUpdatedRows
-        }))
+        }) + (exciseResult.attempts ? ' Попытки: ' + exciseResult.attempts + '.' : ''))
     );
   } catch (err) {
     status = 'ERROR';
@@ -944,25 +946,53 @@ function fetchWbExciseRowsSafely_(entity, period) {
 
 function fetchWbExciseRowsResult_(entity, period) {
   try {
-    return { rows: fetchWbExciseRows_(entity, period), error: '' };
+    return fetchWbExciseRowsWithFallbacks_(entity, period);
   } catch (err) {
     appendError_(entity.entityId, 'fetchExciseReport', '', '', err.message, '');
-    return { rows: [], error: err.message };
+    return { rows: [], error: err.message, reportPeriod: getExciseReportPeriod_(entity, period), attempts: '' };
   }
 }
 
 function fetchWbExciseRows_(entity, period) {
   const reportPeriod = getExciseReportPeriod_(entity, period);
+  return fetchWbExciseRowsForPeriod_(entity, reportPeriod, entity.wbReportCountry);
+}
+
+function fetchWbExciseRowsWithFallbacks_(entity, period) {
+  const attempts = [];
+  const basePeriod = getExciseReportPeriod_(entity, period);
+  let rows = fetchWbExciseRowsForPeriod_(entity, basePeriod, entity.wbReportCountry);
+  attempts.push(describeExciseAttempt_(basePeriod, entity.wbReportCountry, rows.length));
+  if (rows.length) return { rows, error: '', reportPeriod: basePeriod, attempts: attempts.join(' | ') };
+
+  if (entity.wbReportCountry) {
+    rows = fetchWbExciseRowsForPeriod_(entity, basePeriod, '');
+    attempts.push(describeExciseAttempt_(basePeriod, '', rows.length));
+    if (rows.length) return { rows, error: '', reportPeriod: basePeriod, attempts: attempts.join(' | ') };
+  }
+
+  const extendedPeriod = getExciseReportPeriod_(entity, period, 90);
+  if (extendedPeriod.dateFrom !== basePeriod.dateFrom || extendedPeriod.dateTo !== basePeriod.dateTo) {
+    rows = fetchWbExciseRowsForPeriod_(entity, extendedPeriod, '');
+    attempts.push(describeExciseAttempt_(extendedPeriod, '', rows.length));
+    if (rows.length) return { rows, error: '', reportPeriod: extendedPeriod, attempts: attempts.join(' | ') };
+  }
+
+  return { rows: [], error: '', reportPeriod: extendedPeriod, attempts: attempts.join(' | ') };
+}
+
+function fetchWbExciseRowsForPeriod_(entity, reportPeriod, country) {
   const payload = {};
-  if (entity.wbReportCountry) payload.countries = [entity.wbReportCountry];
+  if (country) payload.countries = [country];
   const url = 'https://seller-analytics-api.wildberries.ru/api/v1/analytics/excise-report'
     + '?dateFrom=' + encodeURIComponent(reportPeriod.dateFrom)
     + '&dateTo=' + encodeURIComponent(reportPeriod.dateTo);
   return extractExciseItems_(wbPostJson_(url, entity.wbToken, payload));
 }
 
-function getExciseReportPeriod_(entity, period) {
-  const lookbackDays = Math.max(1, Math.min(90, Number(entity.exciseReportLookbackDays || 14) || 14));
+function getExciseReportPeriod_(entity, period, overrideLookbackDays) {
+  const requestedDays = overrideLookbackDays || entity.exciseReportLookbackDays || 14;
+  const lookbackDays = Math.max(1, Math.min(90, Number(requestedDays) || 14));
   const from = new Date(period.to.getTime());
   from.setDate(from.getDate() - lookbackDays + 1);
   from.setHours(0, 0, 0, 0);
@@ -970,6 +1000,12 @@ function getExciseReportPeriod_(entity, period) {
     dateFrom: Utilities.formatDate(from, TZ, 'yyyy-MM-dd'),
     dateTo: Utilities.formatDate(period.to, TZ, 'yyyy-MM-dd')
   };
+}
+
+function describeExciseAttempt_(reportPeriod, country, rowCount) {
+  return reportPeriod.dateFrom + '..' + reportPeriod.dateTo
+    + ', страна=' + (country || 'без фильтра')
+    + ', строк=' + rowCount;
 }
 
 function extractExciseItems_(response) {
