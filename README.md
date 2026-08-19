@@ -33,8 +33,6 @@ https://docs.google.com/spreadsheets/d/1Ol0SdvkxilSx5wnjwiUqWjDL6lpzWU8bGR5-xERW
     - Этот пункт читает `supplier/sales` и подтягивает цену и дату продажи по `SRID`, но не заполняет номер чека.
 13. Для поиска источника кассового чека: `WB КИЗы` -> `7. Диагностика WB Финансы/Документы`.
     - Диагностика читает `acquiring/detailed`, `documents/categories` и `documents/list`, ищет реальные поля `receipt/check/fiscal/ФН/ФД/ФПД/чек`, сверяет совпадения со строками к выводу, но не меняет чековые поля автоматически.
-14. Если в списке документов есть подозрительные категории: `WB КИЗы` -> `8. Сканировать документы WB`.
-    - Сканер скачивает до 5 документов из категорий вроде `redeem-notification`, `acquiring-fee-report`, `invoice`, распаковывает `zip/xlsx` и ищет чековые слова и совпадения со строками к выводу. Строки не меняет.
 
 ## Логика
 
@@ -53,7 +51,6 @@ https://docs.google.com/spreadsheets/d/1Ol0SdvkxilSx5wnjwiUqWjDL6lpzWU8bGR5-xERW
 - Запасная диагностика WB Статистика проверяет `GET https://statistics-api.wildberries.ru/api/v1/supplier/orders`: она показывает, есть ли в отчёте строки и SRID для склейки, и заполняет `SRID` в листе к выводу только при однозначном совпадении по артикулу, баркоду и времени заказа. `supplier/sales` нужно запускать отдельным следующим шагом после SRID, чтобы не упираться в лимит WB Статистика; номер чека эти методы не отдают.
 - Запасная догрузка цен WB Статистика проверяет `GET https://statistics-api.wildberries.ru/api/v1/supplier/sales`: она заполняет цену и дату продажи по `SRID`, но оставляет чековые поля пустыми, потому что `sales` не отдаёт номер кассового чека.
 - Диагностика WB Финансы/Документы проверяет `POST https://finance-api.wildberries.ru/api/finance/v1/acquiring/detailed`, `GET https://documents-api.wildberries.ru/api/v1/documents/categories?locale=ru` и `GET https://documents-api.wildberries.ru/api/v1/documents/list?locale=ru&beginTime=...&endTime=...`. Она считает поля-кандидаты на фискальные реквизиты и совпадения со строками к выводу, но не считает `invoiceNumber`, `transactionId`, `SRID` или `ID заказа WB` кассовым чеком без набора фискальных признаков.
-- Сканирование WB Документов скачивает подозрительные документы через `GET https://documents-api.wildberries.ru/api/v1/documents/download?serviceName=...&extension=...`, распаковывает текстовые `zip/xlsx`-вложения и ищет фискальные слова и ключи строк. Это диагностический шаг: он не заполняет `Номер чека` до подтверждения реальной структуры документа.
 - Статус WB `canceled_by_client` попадает во ввод обратно в оборот.
 - КИЗ к вводу обратно добавляется только если он уже есть в архиве.
 - Отмены продавца, отмены в первый час и брак пропускаются.
