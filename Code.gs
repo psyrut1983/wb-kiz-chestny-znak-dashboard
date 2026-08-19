@@ -1642,6 +1642,9 @@ function extractDiagnosticItems_(response) {
     response && response.data,
     response && response.data && response.data.data,
     response && response.data && response.data.items,
+    response && response.data && response.data.documents,
+    response && response.data && response.data.categories,
+    response && response.data && response.data.reports,
     response && response.items,
     response && response.result,
     response && response.rows,
@@ -1697,7 +1700,7 @@ function collectDiagnosticFieldsFromValue_(value, prefix, out) {
 
 function isFiscalCandidateField_(field) {
   const raw = String(field || '').toLowerCase();
-  return /receipt|check|cheque|fiscal|fn|fd|fp|fiscaldrive|fiscaldocument|fiscalsign|cash|kkt|ofd|paymentdocument|paymentnumber|transaction|invoice|documentnumber|docnumber|чек|касс|фиск/.test(raw);
+  return /receipt|check|cheque|fiscal|fn|fd|fp|fiscaldrive|fiscaldocument|fiscalsign|cash|kkt|ofd|paymentdocument|paymentnumber|transaction|invoice|documentnumber|docnumber|redeem|acquiring|чек|касс|фиск|выкуп|плат[её]ж|эквайр/.test(raw);
 }
 
 function hasConfirmedFiscalSet_(row) {
