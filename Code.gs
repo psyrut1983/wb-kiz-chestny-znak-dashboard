@@ -701,7 +701,7 @@ function checkWbToken_(token) {
 
   try {
     wbFetchJson_(
-      'https://statistics-api.wildberries.ru/api/v1/supplier/sales?dateFrom=' + encodeURIComponent(period.syncDate),
+      'https://statistics-api.wildberries.ru/api/v1/supplier/orders?dateFrom=' + encodeURIComponent(period.syncDate) + '&flag=0',
       token
     );
   } catch (err) {
@@ -800,7 +800,7 @@ function diagnoseWbStatisticsManual() {
       exciseKiKeys: '',
       withdrawRowsChecked: stats.withdrawRowsChecked,
       fiscalMatchedRows: stats.matchedRows,
-      fiscalUpdatedRows: 0,
+      fiscalUpdatedRows: stats.sridBackfilled,
       loadedRowsWithFiscalData: '',
       newRows: '',
       duplicateRows: '',
@@ -1201,41 +1201,34 @@ function diagnoseWbStatisticsForEntity_(entity, period) {
     salesRows: 0,
     salesSridKeys: 0,
     withdrawRowsChecked: withdrawRows.length,
+    withdrawRowsWithSridBefore: withdrawRows.filter(row => String(row.srid || '').trim()).length,
     withdrawRowsWithSrid: withdrawRows.filter(row => String(row.srid || '').trim()).length,
+    sridBackfilled: 0,
     matchedRows: 0,
+    salesSkipped: false,
     errors: []
   };
 
   let ordersIndex = {};
-  let salesIndex = {};
 
   try {
     const ordersRows = fetchWbStatisticsRows_(entity, 'orders', reportPeriod);
     stats.ordersRows = ordersRows.length;
     ordersIndex = buildWbStatisticsSridIndex_(ordersRows);
     stats.ordersSridKeys = Object.keys(ordersIndex).length;
+    stats.sridBackfilled = backfillSridFromStatisticsOrders_(withdrawSheet, withdrawRows, ordersRows);
+    stats.withdrawRowsWithSrid = withdrawRows.filter(row => String(row.srid || '').trim()).length;
   } catch (err) {
     const message = err && err.message ? err.message : String(err);
     stats.errors.push('orders: ' + message);
     appendError_(entity.entityId, 'fetchStatisticsOrders', '', '', message, '');
   }
 
-  try {
-    const salesRows = fetchWbStatisticsRows_(entity, 'sales', reportPeriod);
-    stats.salesRows = salesRows.length;
-    salesIndex = buildWbStatisticsSridIndex_(salesRows);
-    stats.salesSridKeys = Object.keys(salesIndex).length;
-  } catch (err) {
-    const message = err && err.message ? err.message : String(err);
-    stats.errors.push('sales: ' + message);
-    appendError_(entity.entityId, 'fetchStatisticsSales', '', '', message, '');
-  }
-
-  const combinedIndex = Object.assign({}, ordersIndex, salesIndex);
   stats.matchedRows = withdrawRows.filter(row => {
     const srid = String(row.srid || '').trim();
-    return srid && combinedIndex[srid];
+    return srid && ordersIndex[srid];
   }).length;
+  stats.salesSkipped = true;
 
   return stats;
 }
@@ -1257,15 +1250,87 @@ function buildWbStatisticsSridIndex_(rows) {
   return out;
 }
 
+function backfillSridFromStatisticsOrders_(sheet, withdrawRows, ordersRows) {
+  const orderIndex = buildWbOrdersMatchIndex_(ordersRows);
+  let changed = false;
+  let updatedRows = 0;
+  withdrawRows.forEach(row => {
+    if (String(row.srid || '').trim()) return;
+    const key = wbOrderMatchKey_(row.article, row.barcode, row.wbDate);
+    const matched = key ? orderIndex[key] : null;
+    if (!matched || !matched.srid) return;
+    row.srid = matched.srid;
+    row.updatedAt = now_();
+    row.comment = appendRowComment_(row.comment, 'SRID заполнен из WB Статистика / orders');
+    changed = true;
+    updatedRows += 1;
+  });
+  if (changed) rewriteDataSheet_(sheet, withdrawRows);
+  return updatedRows;
+}
+
+function buildWbOrdersMatchIndex_(ordersRows) {
+  const index = {};
+  const duplicates = {};
+  ordersRows.forEach(order => {
+    const key = wbOrderMatchKey_(order.supplierArticle, order.barcode, order.date);
+    const srid = String(order && order.srid || '').trim();
+    if (!key || !srid) return;
+    if (index[key]) {
+      duplicates[key] = true;
+      return;
+    }
+    index[key] = { srid };
+  });
+  Object.keys(duplicates).forEach(key => {
+    delete index[key];
+  });
+  return index;
+}
+
+function wbOrderMatchKey_(article, barcode, dateValue) {
+  const articleKey = normalizeMatchText_(article);
+  const barcodeKey = normalizeMatchText_(barcode);
+  const dateKey = formatWbDateTimeKey_(dateValue);
+  if (!articleKey || !barcodeKey || !dateKey) return '';
+  return articleKey + '|' + barcodeKey + '|' + dateKey;
+}
+
+function normalizeMatchText_(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
+function formatWbDateTimeKey_(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  if (/[zZ]$|[+-]\d{2}:?\d{2}$/.test(text)) {
+    const parsed = new Date(text);
+    if (!Number.isNaN(parsed.getTime())) return Utilities.formatDate(parsed, TZ, 'yyyy-MM-dd HH:mm:ss');
+  }
+  const match = text.match(/(\d{4}-\d{2}-\d{2})[T\s](\d{2}:\d{2}:\d{2})/);
+  return match ? match[1] + ' ' + match[2] : '';
+}
+
+function appendRowComment_(current, addition) {
+  const text = String(current || '').trim();
+  if (!text) return addition;
+  if (text.indexOf(addition) !== -1) return text;
+  return text + '; ' + addition;
+}
+
 function buildWbStatisticsDiagnosticMessage_(stats) {
   let message = 'WB Статистика: orders строк ' + stats.ordersRows
     + ' / SRID ' + stats.ordersSridKeys
     + ', sales строк ' + stats.salesRows
     + ' / SRID ' + stats.salesSridKeys
     + '. В листе к выводу SRID заполнен у ' + stats.withdrawRowsWithSrid + ' из ' + stats.withdrawRowsChecked
+    + ', обновлено SRID ' + stats.sridBackfilled
     + ', совпало по SRID ' + stats.matchedRows + '.';
   if (!stats.withdrawRowsWithSrid) {
-    message += ' Для склейки со Статистикой нужно сначала добиться SRID в строках заказов WB.';
+    message += ' Не нашёл однозначных совпадений по артикулу, баркоду и времени заказа.';
+  }
+  if (stats.salesSkipped) {
+    message += ' sales в этом запуске не вызываю, чтобы не упереться в лимит WB Статистика; после заполнения SRID можно запускать следующий шаг по продажам отдельно.';
   }
   message += ' Номера чеков эти методы не отдают, поэтому CSV ЧЗ по ним автоматически не разблокирую.';
   if (stats.errors.length) message += ' Ошибки: ' + stats.errors.join(' | ');
