@@ -299,6 +299,7 @@ function onOpen() {
     .addItem('2. Загрузить данные за вчера', 'syncYesterdayManual')
     .addItem('3. Обновить WB API токен', 'updateWbTokenManual')
     .addItem('4. Догрузить чеки и цены WB', 'refreshFiscalDataManual')
+    .addItem('5. Диагностика WB Статистика', 'diagnoseWbStatisticsManual')
     .addToUi();
 }
 
@@ -698,6 +699,15 @@ function checkWbToken_(token) {
     errors.push('Аналитика: ' + err.message);
   }
 
+  try {
+    wbFetchJson_(
+      'https://statistics-api.wildberries.ru/api/v1/supplier/sales?dateFrom=' + encodeURIComponent(period.syncDate),
+      token
+    );
+  } catch (err) {
+    errors.push('Статистика: ' + err.message);
+  }
+
   return { ok: errors.length === 0, errors };
 }
 
@@ -763,6 +773,48 @@ function refreshFiscalDataManual() {
   });
   SpreadsheetApp.getActive().toast('Чеки и цены WB догружены для юрлиц: ' + updatedEntities, 'WB КИЗы', 8);
   return updatedEntities;
+}
+
+function diagnoseWbStatisticsManual() {
+  setupWorkbook_();
+  const period = getYesterdayPeriod_();
+  const entities = readSettings_().filter(entity => entity.isActive);
+  let checkedEntities = 0;
+  entities.forEach(entity => {
+    validateEntity_(entity);
+    const startedAt = now_();
+    const stats = diagnoseWbStatisticsForEntity_(entity, period);
+    const message = buildWbStatisticsDiagnosticMessage_(stats);
+    appendLog_({
+      startedAt,
+      finishedAt: now_(),
+      entityId: entity.entityId,
+      legalName: entity.legalName,
+      periodFrom: stats.reportPeriod.dateFrom,
+      periodTo: stats.reportPeriod.dateTo,
+      rowsLoaded: stats.ordersRows + stats.salesRows,
+      excisePeriodFrom: '',
+      excisePeriodTo: '',
+      exciseRows: '',
+      exciseSridKeys: stats.ordersSridKeys + stats.salesSridKeys,
+      exciseKiKeys: '',
+      withdrawRowsChecked: stats.withdrawRowsChecked,
+      fiscalMatchedRows: stats.matchedRows,
+      fiscalUpdatedRows: 0,
+      loadedRowsWithFiscalData: '',
+      newRows: '',
+      duplicateRows: '',
+      withdrawNewRows: '',
+      introduceNewRows: '',
+      errors: stats.errors.length,
+      status: stats.errors.length ? 'PARTIAL' : 'OK',
+      message
+    });
+    updateSettingsSyncStatus_(entity.entityId, message);
+    checkedEntities += 1;
+  });
+  SpreadsheetApp.getActive().toast('Диагностика WB Статистика завершена для юрлиц: ' + checkedEntities, 'WB КИЗы', 8);
+  return checkedEntities;
 }
 
 function syncYesterdayAllEntities(showToast) {
@@ -1136,6 +1188,88 @@ function buildFiscalSyncMessage_(exciseRowsCount, fiscalStats) {
     return 'Чеки/цены WB: отчёт вернул ' + exciseRowsCount + ' строк, но совпадений с листом к выводу нет. Нужно сверить SRID и формат КИ.';
   }
   return 'Чеки/цены WB: отчёт вернул ' + exciseRowsCount + ' строк, совпало ' + fiscalStats.matchedRows + ', обновлено ' + fiscalStats.updatedRows + '.';
+}
+
+function diagnoseWbStatisticsForEntity_(entity, period) {
+  const reportPeriod = getExciseReportPeriod_(entity, period, 90);
+  const withdrawSheet = getOrCreateSheet_(entity.withdrawSheetName, DATA_HEADERS);
+  const withdrawRows = readDataObjects_(withdrawSheet);
+  const stats = {
+    reportPeriod,
+    ordersRows: 0,
+    ordersSridKeys: 0,
+    salesRows: 0,
+    salesSridKeys: 0,
+    withdrawRowsChecked: withdrawRows.length,
+    withdrawRowsWithSrid: withdrawRows.filter(row => String(row.srid || '').trim()).length,
+    matchedRows: 0,
+    errors: []
+  };
+
+  let ordersIndex = {};
+  let salesIndex = {};
+
+  try {
+    const ordersRows = fetchWbStatisticsRows_(entity, 'orders', reportPeriod);
+    stats.ordersRows = ordersRows.length;
+    ordersIndex = buildWbStatisticsSridIndex_(ordersRows);
+    stats.ordersSridKeys = Object.keys(ordersIndex).length;
+  } catch (err) {
+    const message = err && err.message ? err.message : String(err);
+    stats.errors.push('orders: ' + message);
+    appendError_(entity.entityId, 'fetchStatisticsOrders', '', '', message, '');
+  }
+
+  try {
+    const salesRows = fetchWbStatisticsRows_(entity, 'sales', reportPeriod);
+    stats.salesRows = salesRows.length;
+    salesIndex = buildWbStatisticsSridIndex_(salesRows);
+    stats.salesSridKeys = Object.keys(salesIndex).length;
+  } catch (err) {
+    const message = err && err.message ? err.message : String(err);
+    stats.errors.push('sales: ' + message);
+    appendError_(entity.entityId, 'fetchStatisticsSales', '', '', message, '');
+  }
+
+  const combinedIndex = Object.assign({}, ordersIndex, salesIndex);
+  stats.matchedRows = withdrawRows.filter(row => {
+    const srid = String(row.srid || '').trim();
+    return srid && combinedIndex[srid];
+  }).length;
+
+  return stats;
+}
+
+function fetchWbStatisticsRows_(entity, reportName, reportPeriod) {
+  const url = 'https://statistics-api.wildberries.ru/api/v1/supplier/' + reportName
+    + '?dateFrom=' + encodeURIComponent(reportPeriod.dateFrom)
+    + '&flag=0';
+  const response = wbFetchJson_(url, entity.wbToken);
+  return Array.isArray(response) ? response : [];
+}
+
+function buildWbStatisticsSridIndex_(rows) {
+  const out = {};
+  rows.forEach(row => {
+    const srid = String(row && row.srid || '').trim();
+    if (srid && !out[srid]) out[srid] = row;
+  });
+  return out;
+}
+
+function buildWbStatisticsDiagnosticMessage_(stats) {
+  let message = 'WB Статистика: orders строк ' + stats.ordersRows
+    + ' / SRID ' + stats.ordersSridKeys
+    + ', sales строк ' + stats.salesRows
+    + ' / SRID ' + stats.salesSridKeys
+    + '. В листе к выводу SRID заполнен у ' + stats.withdrawRowsWithSrid + ' из ' + stats.withdrawRowsChecked
+    + ', совпало по SRID ' + stats.matchedRows + '.';
+  if (!stats.withdrawRowsWithSrid) {
+    message += ' Для склейки со Статистикой нужно сначала добиться SRID в строках заказов WB.';
+  }
+  message += ' Номера чеков эти методы не отдают, поэтому CSV ЧЗ по ним автоматически не разблокирую.';
+  if (stats.errors.length) message += ' Ошибки: ' + stats.errors.join(' | ');
+  return message;
 }
 
 function fetchWbKizRows_(entity, period) {
@@ -2017,6 +2151,8 @@ function displayErrorStep_(step) {
   if (raw.indexOf('fetchOrdersStatusBulk:') === 0) return 'Загрузка статусов WB (' + raw.split(':')[1].toUpperCase() + ')';
   if (raw.indexOf('fetchOrdersMetaBulk:') === 0) return 'Загрузка КИЗов WB (' + raw.split(':')[1].toUpperCase() + ')';
   if (raw === 'fetchExciseReport') return 'Загрузка отчёта WB по маркировке';
+  if (raw === 'fetchStatisticsOrders') return 'Загрузка WB Статистика / заказы';
+  if (raw === 'fetchStatisticsSales') return 'Загрузка WB Статистика / продажи';
   if (raw === 'introduceWithoutArchive') return 'КИЗ к вводу не найден в архиве';
   return raw;
 }
