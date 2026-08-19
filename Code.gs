@@ -302,6 +302,7 @@ function onOpen() {
     .addItem('5. Диагностика WB Статистика', 'diagnoseWbStatisticsManual')
     .addItem('6. Догрузить цены WB Статистика', 'refreshWbStatisticsSalesManual')
     .addItem('7. Диагностика WB Финансы/Документы', 'diagnoseWbFinanceDocumentsManual')
+    .addItem('8. Сканировать документы WB', 'scanWbDocumentsManual')
     .addToUi();
 }
 
@@ -900,6 +901,48 @@ function diagnoseWbFinanceDocumentsManual() {
     checkedEntities += 1;
   });
   SpreadsheetApp.getActive().toast('Диагностика WB Финансы/Документы завершена для юрлиц: ' + checkedEntities, 'WB КИЗы', 8);
+  return checkedEntities;
+}
+
+function scanWbDocumentsManual() {
+  setupWorkbook_();
+  const period = getYesterdayPeriod_();
+  const entities = readSettings_().filter(entity => entity.isActive);
+  let checkedEntities = 0;
+  entities.forEach(entity => {
+    validateEntity_(entity);
+    const startedAt = now_();
+    const stats = scanWbDocumentsForEntity_(entity, period);
+    const message = buildWbDocumentsScanMessage_(stats);
+    appendLog_({
+      startedAt,
+      finishedAt: now_(),
+      entityId: entity.entityId,
+      legalName: entity.legalName,
+      periodFrom: stats.reportPeriod.dateFrom,
+      periodTo: stats.reportPeriod.dateTo,
+      rowsLoaded: stats.documentsRows,
+      excisePeriodFrom: '',
+      excisePeriodTo: '',
+      exciseRows: stats.selectedDocuments,
+      exciseSridKeys: stats.downloadedDocuments,
+      exciseKiKeys: stats.contentCandidateDocuments,
+      withdrawRowsChecked: stats.withdrawRowsChecked,
+      fiscalMatchedRows: stats.matchedDocuments,
+      fiscalUpdatedRows: 0,
+      loadedRowsWithFiscalData: '',
+      newRows: '',
+      duplicateRows: '',
+      withdrawNewRows: '',
+      introduceNewRows: '',
+      errors: stats.errors.length,
+      status: stats.errors.length ? 'PARTIAL' : 'OK',
+      message
+    });
+    updateSettingsSyncStatus_(entity.entityId, message);
+    checkedEntities += 1;
+  });
+  SpreadsheetApp.getActive().toast('Сканирование документов WB завершено для юрлиц: ' + checkedEntities, 'WB КИЗы', 8);
   return checkedEntities;
 }
 
@@ -1749,6 +1792,207 @@ function findSuspiciousDocumentCategories_(categories) {
 function formatDiagnosticList_(items) {
   if (!items || !items.length) return 'нет';
   return items.slice(0, 12).join(', ') + (items.length > 12 ? ' +' + (items.length - 12) : '');
+}
+
+function scanWbDocumentsForEntity_(entity, period) {
+  const reportPeriod = getExciseReportPeriod_(entity, period, 90);
+  const withdrawSheet = getOrCreateSheet_(entity.withdrawSheetName, DATA_HEADERS);
+  const withdrawRows = readDataObjects_(withdrawSheet);
+  const stats = {
+    reportPeriod,
+    withdrawRowsChecked: withdrawRows.length,
+    documentsRows: 0,
+    selectedDocuments: 0,
+    downloadedDocuments: 0,
+    downloadedFiles: 0,
+    contentCandidateDocuments: 0,
+    matchedDocuments: 0,
+    selectedNames: [],
+    contentCandidateNames: [],
+    matchedNames: [],
+    errors: []
+  };
+
+  let documentsRows = [];
+  try {
+    documentsRows = extractDiagnosticItems_(wbFetchJson_(
+      'https://documents-api.wildberries.ru/api/v1/documents/list'
+        + '?locale=ru'
+        + '&beginTime=' + encodeURIComponent(reportPeriod.dateFrom)
+        + '&endTime=' + encodeURIComponent(reportPeriod.dateTo)
+        + '&sort=category'
+        + '&order=asc'
+        + '&limit=50',
+      entity.wbToken
+    ));
+    stats.documentsRows = documentsRows.length;
+  } catch (err) {
+    const message = err && err.message ? err.message : String(err);
+    stats.errors.push('documents/list: ' + message);
+    appendError_(entity.entityId, 'scanDocumentsList', '', '', message, '');
+    return stats;
+  }
+
+  const selectedDocs = documentsRows
+    .filter(isDocumentWorthDownloading_)
+    .slice(0, 5);
+  stats.selectedDocuments = selectedDocs.length;
+  stats.selectedNames = selectedDocs.map(describeWbDocument_);
+
+  selectedDocs.forEach(doc => {
+    const serviceName = String(doc.serviceName || '').trim();
+    const extension = chooseDocumentExtension_(doc);
+    if (!serviceName || !extension) return;
+    try {
+      const response = wbFetchJson_(
+        'https://documents-api.wildberries.ru/api/v1/documents/download'
+          + '?serviceName=' + encodeURIComponent(serviceName)
+          + '&extension=' + encodeURIComponent(extension),
+        entity.wbToken
+      );
+      const scan = scanDownloadedWbDocument_(response, withdrawRows);
+      stats.downloadedDocuments += 1;
+      stats.downloadedFiles += scan.files;
+      if (scan.hasCandidateText) {
+        stats.contentCandidateDocuments += 1;
+        stats.contentCandidateNames.push(describeWbDocument_(doc) + ': ' + scan.candidateSnippets.join(' | '));
+      }
+      if (scan.matchedRows) {
+        stats.matchedDocuments += 1;
+        stats.matchedNames.push(describeWbDocument_(doc) + ': совпадений ' + scan.matchedRows);
+      }
+    } catch (err) {
+      const message = err && err.message ? err.message : String(err);
+      stats.errors.push(serviceName + ': ' + message);
+      appendError_(entity.entityId, 'scanDocumentsDownload', serviceName, '', message, '');
+    }
+  });
+
+  return stats;
+}
+
+function buildWbDocumentsScanMessage_(stats) {
+  let message = 'WB Документы scan: документов в списке ' + stats.documentsRows
+    + ', выбрано для скачивания ' + stats.selectedDocuments
+    + ', скачано документов ' + stats.downloadedDocuments
+    + ', файлов внутри ' + stats.downloadedFiles
+    + ', документов с чековыми словами ' + stats.contentCandidateDocuments
+    + ', документов с совпадениями по строкам ' + stats.matchedDocuments + '.';
+  message += ' Выбраны: ' + formatDiagnosticList_(stats.selectedNames) + '.';
+  if (stats.contentCandidateNames.length) message += ' Найдены кандидаты: ' + formatDiagnosticList_(stats.contentCandidateNames) + '.';
+  if (stats.matchedNames.length) message += ' Совпадения: ' + formatDiagnosticList_(stats.matchedNames) + '.';
+  message += ' Строки к выводу не меняю.';
+  if (stats.errors.length) message += ' Ошибки: ' + stats.errors.join(' | ');
+  return message;
+}
+
+function isDocumentWorthDownloading_(doc) {
+  const name = String(doc.name || '');
+  const category = String(doc.category || '');
+  const serviceName = String(doc.serviceName || '');
+  const haystack = [name, category, serviceName].join(' ');
+  return isFiscalCandidateField_(haystack);
+}
+
+function chooseDocumentExtension_(doc) {
+  const extensions = Array.isArray(doc.extensions) ? doc.extensions.map(String) : [];
+  const preferred = ['zip', 'xlsx', 'xls', 'csv', 'xml', 'json', 'txt'];
+  for (let i = 0; i < preferred.length; i++) {
+    if (extensions.indexOf(preferred[i]) !== -1) return preferred[i];
+  }
+  return extensions[0] || '';
+}
+
+function describeWbDocument_(doc) {
+  const name = String(doc.name || '').trim();
+  const category = String(doc.category || '').trim();
+  const serviceName = String(doc.serviceName || '').trim();
+  return [name || category || 'document', serviceName].filter(Boolean).join('/');
+}
+
+function scanDownloadedWbDocument_(response, withdrawRows) {
+  const file = extractDownloadedWbFile_(response);
+  const texts = [];
+  if (file.bytes.length) {
+    extractTextFromDocumentBytes_(file.bytes, file.fileName, file.extension).forEach(text => texts.push(text));
+  } else {
+    texts.push(JSON.stringify(response || {}));
+  }
+
+  let files = 0;
+  let hasCandidateText = false;
+  let matchedRows = 0;
+  const candidateSnippets = [];
+  texts.forEach(text => {
+    if (!text) return;
+    files += 1;
+    const snippet = findFiscalTextSnippet_(text);
+    if (snippet) {
+      hasCandidateText = true;
+      candidateSnippets.push(snippet);
+    }
+    if (matchesWithdrawRows_(text, withdrawRows)) matchedRows += 1;
+  });
+  return {
+    files,
+    hasCandidateText,
+    matchedRows,
+    candidateSnippets: unique_(candidateSnippets).slice(0, 3)
+  };
+}
+
+function extractDownloadedWbFile_(response) {
+  const data = response && response.data ? response.data : response || {};
+  const base64 = firstNonEmpty_([
+    data.file,
+    data.content,
+    data.document,
+    data.body,
+    data.data,
+    response && response.file,
+    response && response.content
+  ]);
+  let bytes = [];
+  if (base64) {
+    try {
+      bytes = Utilities.base64Decode(String(base64));
+    } catch (err) {
+      bytes = [];
+    }
+  }
+  return {
+    fileName: String(data.fileName || data.name || ''),
+    extension: String(data.extension || ''),
+    bytes
+  };
+}
+
+function extractTextFromDocumentBytes_(bytes, fileName, extension) {
+  const ext = String(extension || fileName || '').toLowerCase();
+  const blob = Utilities.newBlob(bytes, '', fileName || 'wb-document');
+  if (ext.indexOf('zip') !== -1 || ext.indexOf('xlsx') !== -1 || ext.indexOf('xls') !== -1) {
+    try {
+      return Utilities.unzip(blob).map(item => blobToText_(item)).filter(Boolean);
+    } catch (err) {
+      return [blobToText_(blob)];
+    }
+  }
+  return [blobToText_(blob)];
+}
+
+function blobToText_(blob) {
+  try {
+    return blob.getDataAsString('UTF-8');
+  } catch (err) {
+    return '';
+  }
+}
+
+function findFiscalTextSnippet_(text) {
+  const source = String(text || '');
+  const match = source.match(/.{0,40}(receipt|check|cheque|fiscal|fiscalDrive|fiscalDocument|fiscalSign|cashReceipt|ФН|ФД|ФПД|чек|касс|фиск).{0,80}/i);
+  if (!match) return '';
+  return match[0].replace(/\s+/g, ' ').slice(0, 180);
 }
 
 function fetchWbKizRows_(entity, period) {
@@ -2635,6 +2879,8 @@ function displayErrorStep_(step) {
   if (raw === 'fetchFinanceAcquiringDetailed') return 'Загрузка WB Финансы / эквайринг';
   if (raw === 'fetchDocumentsCategories') return 'Загрузка WB Документы / категории';
   if (raw === 'fetchDocumentsList') return 'Загрузка WB Документы / список';
+  if (raw === 'scanDocumentsList') return 'Сканирование WB Документы / список';
+  if (raw === 'scanDocumentsDownload') return 'Сканирование WB Документы / скачивание';
   if (raw === 'introduceWithoutArchive') return 'КИЗ к вводу не найден в архиве';
   return raw;
 }
