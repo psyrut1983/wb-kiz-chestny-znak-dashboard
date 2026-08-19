@@ -300,6 +300,7 @@ function onOpen() {
     .addItem('3. Обновить WB API токен', 'updateWbTokenManual')
     .addItem('4. Догрузить чеки и цены WB', 'refreshFiscalDataManual')
     .addItem('5. Диагностика WB Статистика', 'diagnoseWbStatisticsManual')
+    .addItem('6. Догрузить цены WB Статистика', 'refreshWbStatisticsSalesManual')
     .addToUi();
 }
 
@@ -817,6 +818,48 @@ function diagnoseWbStatisticsManual() {
   return checkedEntities;
 }
 
+function refreshWbStatisticsSalesManual() {
+  setupWorkbook_();
+  const period = getYesterdayPeriod_();
+  const entities = readSettings_().filter(entity => entity.isActive);
+  let checkedEntities = 0;
+  entities.forEach(entity => {
+    validateEntity_(entity);
+    const startedAt = now_();
+    const stats = refreshWbStatisticsSalesForEntity_(entity, period);
+    const message = buildWbStatisticsSalesMessage_(stats);
+    appendLog_({
+      startedAt,
+      finishedAt: now_(),
+      entityId: entity.entityId,
+      legalName: entity.legalName,
+      periodFrom: stats.reportPeriod.dateFrom,
+      periodTo: stats.reportPeriod.dateTo,
+      rowsLoaded: stats.salesRows,
+      excisePeriodFrom: '',
+      excisePeriodTo: '',
+      exciseRows: '',
+      exciseSridKeys: stats.salesSridKeys,
+      exciseKiKeys: '',
+      withdrawRowsChecked: stats.withdrawRowsChecked,
+      fiscalMatchedRows: stats.matchedRows,
+      fiscalUpdatedRows: stats.updatedRows,
+      loadedRowsWithFiscalData: '',
+      newRows: '',
+      duplicateRows: '',
+      withdrawNewRows: '',
+      introduceNewRows: '',
+      errors: stats.errors.length,
+      status: stats.errors.length ? 'PARTIAL' : 'OK',
+      message
+    });
+    updateSettingsSyncStatus_(entity.entityId, message);
+    checkedEntities += 1;
+  });
+  SpreadsheetApp.getActive().toast('Цены WB Статистика догружены для юрлиц: ' + checkedEntities, 'WB КИЗы', 8);
+  return checkedEntities;
+}
+
 function syncYesterdayAllEntities(showToast) {
   const shouldToast = showToast === true;
   setupWorkbook_();
@@ -1233,6 +1276,38 @@ function diagnoseWbStatisticsForEntity_(entity, period) {
   return stats;
 }
 
+function refreshWbStatisticsSalesForEntity_(entity, period) {
+  const reportPeriod = getExciseReportPeriod_(entity, period, 90);
+  const withdrawSheet = getOrCreateSheet_(entity.withdrawSheetName, DATA_HEADERS);
+  const withdrawRows = readDataObjects_(withdrawSheet);
+  const stats = {
+    reportPeriod,
+    salesRows: 0,
+    salesSridKeys: 0,
+    withdrawRowsChecked: withdrawRows.length,
+    withdrawRowsWithSrid: withdrawRows.filter(row => String(row.srid || '').trim()).length,
+    matchedRows: 0,
+    updatedRows: 0,
+    errors: []
+  };
+
+  try {
+    const salesRows = fetchWbStatisticsRows_(entity, 'sales', reportPeriod);
+    stats.salesRows = salesRows.length;
+    const salesIndex = buildWbStatisticsSridIndex_(salesRows);
+    stats.salesSridKeys = Object.keys(salesIndex).length;
+    const result = updateExistingSalesDataFromStatistics_(withdrawSheet, withdrawRows, salesIndex);
+    stats.matchedRows = result.matchedRows;
+    stats.updatedRows = result.updatedRows;
+  } catch (err) {
+    const message = err && err.message ? err.message : String(err);
+    stats.errors.push('sales: ' + message);
+    appendError_(entity.entityId, 'fetchStatisticsSales', '', '', message, '');
+  }
+
+  return stats;
+}
+
 function fetchWbStatisticsRows_(entity, reportName, reportPeriod) {
   const url = 'https://statistics-api.wildberries.ru/api/v1/supplier/' + reportName
     + '?dateFrom=' + encodeURIComponent(reportPeriod.dateFrom)
@@ -1248,6 +1323,59 @@ function buildWbStatisticsSridIndex_(rows) {
     if (srid && !out[srid]) out[srid] = row;
   });
   return out;
+}
+
+function updateExistingSalesDataFromStatistics_(sheet, withdrawRows, salesIndex) {
+  let changed = false;
+  let matchedRows = 0;
+  let updatedRows = 0;
+  withdrawRows.forEach(row => {
+    const srid = String(row.srid || '').trim();
+    const sale = srid ? salesIndex[srid] : null;
+    if (!sale) return;
+    matchedRows += 1;
+    const before = JSON.stringify([
+      row.unitPrice,
+      row.priceCurrency,
+      row.wbSaleDate,
+      row.wbSaleAmount,
+      row.fiscalDataSource
+    ]);
+    enrichRowWithStatisticsSale_(row, sale);
+    const after = JSON.stringify([
+      row.unitPrice,
+      row.priceCurrency,
+      row.wbSaleDate,
+      row.wbSaleAmount,
+      row.fiscalDataSource
+    ]);
+    if (before !== after) {
+      changed = true;
+      updatedRows += 1;
+    }
+  });
+  if (changed) rewriteDataSheet_(sheet, withdrawRows);
+  return { matchedRows, updatedRows };
+}
+
+function enrichRowWithStatisticsSale_(row, sale) {
+  const price = firstNonEmpty_([
+    sale.finishedPrice,
+    sale.priceWithDisc,
+    sale.totalPrice,
+    sale.forPay
+  ]);
+  const saleDate = formatWbDateOnly_(sale.date || sale.lastChangeDate || '');
+  const timestamp = now_();
+  if (price !== '' && !String(row.unitPrice || '').trim()) row.unitPrice = String(price).trim();
+  if (price !== '' && !String(row.wbSaleAmount || '').trim()) row.wbSaleAmount = String(price).trim();
+  if (!String(row.priceCurrency || '').trim()) row.priceCurrency = 'RUB';
+  if (saleDate && !String(row.wbSaleDate || '').trim()) row.wbSaleDate = saleDate;
+  row.fiscalDataSource = appendDataSource_(row.fiscalDataSource, 'WB supplier/sales');
+  row.fiscalDataUpdatedAt = timestamp;
+  row.updatedAt = timestamp;
+  row.comment = appendRowComment_(row.comment, 'Цена/дата продажи из WB Статистика / sales; номер чека не найден');
+  return row;
 }
 
 function backfillSridFromStatisticsOrders_(sheet, withdrawRows, ordersRows) {
@@ -1318,6 +1446,22 @@ function appendRowComment_(current, addition) {
   return text + '; ' + addition;
 }
 
+function firstNonEmpty_(values) {
+  for (let i = 0; i < values.length; i++) {
+    if (values[i] == null) continue;
+    const text = String(values[i]).trim();
+    if (text !== '') return text;
+  }
+  return '';
+}
+
+function appendDataSource_(current, addition) {
+  const text = String(current || '').trim();
+  if (!text) return addition;
+  if (text.indexOf(addition) !== -1) return text;
+  return text + ' + ' + addition;
+}
+
 function buildWbStatisticsDiagnosticMessage_(stats) {
   let message = 'WB Статистика: orders строк ' + stats.ordersRows
     + ' / SRID ' + stats.ordersSridKeys
@@ -1333,6 +1477,17 @@ function buildWbStatisticsDiagnosticMessage_(stats) {
     message += ' sales в этом запуске не вызываю, чтобы не упереться в лимит WB Статистика; после заполнения SRID можно запускать следующий шаг по продажам отдельно.';
   }
   message += ' Номера чеков эти методы не отдают, поэтому CSV ЧЗ по ним автоматически не разблокирую.';
+  if (stats.errors.length) message += ' Ошибки: ' + stats.errors.join(' | ');
+  return message;
+}
+
+function buildWbStatisticsSalesMessage_(stats) {
+  let message = 'WB Статистика sales: строк ' + stats.salesRows
+    + ' / SRID ' + stats.salesSridKeys
+    + '. В листе к выводу SRID заполнен у ' + stats.withdrawRowsWithSrid + ' из ' + stats.withdrawRowsChecked
+    + ', совпало по SRID ' + stats.matchedRows
+    + ', обновлено цена/дата ' + stats.updatedRows + '.';
+  message += ' Номер чека sales не отдаёт, поэтому CSV ЧЗ всё ещё ждёт чековые поля.';
   if (stats.errors.length) message += ' Ошибки: ' + stats.errors.join(' | ');
   return message;
 }
