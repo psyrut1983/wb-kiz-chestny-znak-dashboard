@@ -301,6 +301,7 @@ function onOpen() {
     .addItem('4. Догрузить чеки и цены WB', 'refreshFiscalDataManual')
     .addItem('5. Диагностика WB Статистика', 'diagnoseWbStatisticsManual')
     .addItem('6. Догрузить цены WB Статистика', 'refreshWbStatisticsSalesManual')
+    .addItem('7. Диагностика WB Финансы/Документы', 'diagnoseWbFinanceDocumentsManual')
     .addToUi();
 }
 
@@ -857,6 +858,48 @@ function refreshWbStatisticsSalesManual() {
     checkedEntities += 1;
   });
   SpreadsheetApp.getActive().toast('Цены WB Статистика догружены для юрлиц: ' + checkedEntities, 'WB КИЗы', 8);
+  return checkedEntities;
+}
+
+function diagnoseWbFinanceDocumentsManual() {
+  setupWorkbook_();
+  const period = getYesterdayPeriod_();
+  const entities = readSettings_().filter(entity => entity.isActive);
+  let checkedEntities = 0;
+  entities.forEach(entity => {
+    validateEntity_(entity);
+    const startedAt = now_();
+    const stats = diagnoseWbFinanceDocumentsForEntity_(entity, period);
+    const message = buildWbFinanceDocumentsMessage_(stats);
+    appendLog_({
+      startedAt,
+      finishedAt: now_(),
+      entityId: entity.entityId,
+      legalName: entity.legalName,
+      periodFrom: stats.reportPeriod.dateFrom,
+      periodTo: stats.reportPeriod.dateTo,
+      rowsLoaded: stats.acquiringRows + stats.documentsRows,
+      excisePeriodFrom: '',
+      excisePeriodTo: '',
+      exciseRows: stats.acquiringRows,
+      exciseSridKeys: stats.acquiringCandidateRows,
+      exciseKiKeys: stats.documentsCandidateRows,
+      withdrawRowsChecked: stats.withdrawRowsChecked,
+      fiscalMatchedRows: stats.confirmedFiscalRows,
+      fiscalUpdatedRows: 0,
+      loadedRowsWithFiscalData: '',
+      newRows: '',
+      duplicateRows: '',
+      withdrawNewRows: '',
+      introduceNewRows: '',
+      errors: stats.errors.length,
+      status: stats.errors.length ? 'PARTIAL' : 'OK',
+      message
+    });
+    updateSettingsSyncStatus_(entity.entityId, message);
+    checkedEntities += 1;
+  });
+  SpreadsheetApp.getActive().toast('Диагностика WB Финансы/Документы завершена для юрлиц: ' + checkedEntities, 'WB КИЗы', 8);
   return checkedEntities;
 }
 
@@ -1490,6 +1533,219 @@ function buildWbStatisticsSalesMessage_(stats) {
   message += ' Номер чека sales не отдаёт, поэтому CSV ЧЗ всё ещё ждёт чековые поля.';
   if (stats.errors.length) message += ' Ошибки: ' + stats.errors.join(' | ');
   return message;
+}
+
+function diagnoseWbFinanceDocumentsForEntity_(entity, period) {
+  const reportPeriod = getExciseReportPeriod_(entity, period, 90);
+  const withdrawSheet = getOrCreateSheet_(entity.withdrawSheetName, DATA_HEADERS);
+  const withdrawRows = readDataObjects_(withdrawSheet);
+  const stats = {
+    reportPeriod,
+    withdrawRowsChecked: withdrawRows.length,
+    acquiringRows: 0,
+    acquiringFields: [],
+    acquiringCandidateFields: [],
+    acquiringCandidateRows: 0,
+    acquiringMatchedRows: 0,
+    documentsCategories: 0,
+    documentsSuspiciousCategories: [],
+    documentsRows: 0,
+    documentsFields: [],
+    documentsCandidateFields: [],
+    documentsCandidateRows: 0,
+    documentsMatchedRows: 0,
+    confirmedFiscalRows: 0,
+    errors: []
+  };
+
+  try {
+    const acquiringRows = extractDiagnosticItems_(wbPostJson_(
+      'https://finance-api.wildberries.ru/api/finance/v1/acquiring/detailed',
+      entity.wbToken,
+      {
+        dateFrom: reportPeriod.dateFrom,
+        dateTo: reportPeriod.dateTo,
+        limit: 100,
+        rrdId: 0
+      }
+    ));
+    const acquiringSummary = summarizeDiagnosticRows_(acquiringRows, withdrawRows);
+    stats.acquiringRows = acquiringRows.length;
+    stats.acquiringFields = acquiringSummary.fields;
+    stats.acquiringCandidateFields = acquiringSummary.candidateFields;
+    stats.acquiringCandidateRows = acquiringSummary.candidateRows;
+    stats.acquiringMatchedRows = acquiringSummary.matchedRows;
+    stats.confirmedFiscalRows += acquiringSummary.confirmedFiscalRows;
+  } catch (err) {
+    const message = err && err.message ? err.message : String(err);
+    stats.errors.push('acquiring/detailed: ' + message);
+    appendError_(entity.entityId, 'fetchFinanceAcquiringDetailed', '', '', message, '');
+  }
+
+  try {
+    const categories = extractDiagnosticItems_(wbFetchJson_(
+      'https://documents-api.wildberries.ru/api/v1/documents/categories?locale=ru',
+      entity.wbToken
+    ));
+    stats.documentsCategories = categories.length;
+    stats.documentsSuspiciousCategories = findSuspiciousDocumentCategories_(categories);
+  } catch (err) {
+    const message = err && err.message ? err.message : String(err);
+    stats.errors.push('documents/categories: ' + message);
+    appendError_(entity.entityId, 'fetchDocumentsCategories', '', '', message, '');
+  }
+
+  try {
+    const documentsRows = extractDiagnosticItems_(wbFetchJson_(
+      'https://documents-api.wildberries.ru/api/v1/documents/list'
+        + '?locale=ru'
+        + '&beginTime=' + encodeURIComponent(reportPeriod.dateFrom)
+        + '&endTime=' + encodeURIComponent(reportPeriod.dateTo),
+      entity.wbToken
+    ));
+    const documentsSummary = summarizeDiagnosticRows_(documentsRows, withdrawRows);
+    stats.documentsRows = documentsRows.length;
+    stats.documentsFields = documentsSummary.fields;
+    stats.documentsCandidateFields = documentsSummary.candidateFields;
+    stats.documentsCandidateRows = documentsSummary.candidateRows;
+    stats.documentsMatchedRows = documentsSummary.matchedRows;
+    stats.confirmedFiscalRows += documentsSummary.confirmedFiscalRows;
+  } catch (err) {
+    const message = err && err.message ? err.message : String(err);
+    stats.errors.push('documents/list: ' + message);
+    appendError_(entity.entityId, 'fetchDocumentsList', '', '', message, '');
+  }
+
+  return stats;
+}
+
+function buildWbFinanceDocumentsMessage_(stats) {
+  let message = 'WB Финансы/Документы: acquiring/detailed строк ' + stats.acquiringRows
+    + ', поля-кандидаты ' + formatDiagnosticList_(stats.acquiringCandidateFields)
+    + ', строк с кандидатами ' + stats.acquiringCandidateRows
+    + ', совпало с листом ' + stats.acquiringMatchedRows + '.';
+  message += ' Documents: категорий ' + stats.documentsCategories
+    + ', подозрительные категории ' + formatDiagnosticList_(stats.documentsSuspiciousCategories)
+    + ', документов ' + stats.documentsRows
+    + ', поля-кандидаты ' + formatDiagnosticList_(stats.documentsCandidateFields)
+    + ', строк с кандидатами ' + stats.documentsCandidateRows
+    + ', совпало с листом ' + stats.documentsMatchedRows + '.';
+  message += ' Надёжных фискальных наборов ФН/ФД/ФПД/чек найдено: ' + stats.confirmedFiscalRows + '.';
+  message += ' Данные только диагностирую, чековые поля в строках не меняю.';
+  if (stats.errors.length) message += ' Ошибки: ' + stats.errors.join(' | ');
+  return message;
+}
+
+function extractDiagnosticItems_(response) {
+  if (Array.isArray(response)) return response;
+  const candidates = [
+    response && response.data,
+    response && response.data && response.data.data,
+    response && response.data && response.data.items,
+    response && response.items,
+    response && response.result,
+    response && response.rows,
+    response && response.documents,
+    response && response.categories,
+    response && response.reports
+  ];
+  for (let i = 0; i < candidates.length; i++) {
+    if (Array.isArray(candidates[i])) return candidates[i];
+  }
+  return [];
+}
+
+function summarizeDiagnosticRows_(rows, withdrawRows) {
+  const fields = collectDiagnosticFields_(rows);
+  const candidateFields = fields.filter(isFiscalCandidateField_);
+  let candidateRows = 0;
+  let confirmedFiscalRows = 0;
+  let matchedRows = 0;
+  rows.forEach(row => {
+    const rowFields = collectDiagnosticFields_([row]);
+    if (rowFields.some(isFiscalCandidateField_)) candidateRows += 1;
+    if (hasConfirmedFiscalSet_(row)) confirmedFiscalRows += 1;
+    if (matchesWithdrawRows_(row, withdrawRows)) matchedRows += 1;
+  });
+  return {
+    fields,
+    candidateFields,
+    candidateRows,
+    confirmedFiscalRows,
+    matchedRows
+  };
+}
+
+function collectDiagnosticFields_(rows) {
+  const out = {};
+  rows.slice(0, 20).forEach(row => collectDiagnosticFieldsFromValue_(row, '', out));
+  return Object.keys(out).sort();
+}
+
+function collectDiagnosticFieldsFromValue_(value, prefix, out) {
+  if (!value || typeof value !== 'object') return;
+  if (Array.isArray(value)) {
+    value.slice(0, 3).forEach(item => collectDiagnosticFieldsFromValue_(item, prefix, out));
+    return;
+  }
+  Object.keys(value).forEach(key => {
+    const path = prefix ? prefix + '.' + key : key;
+    out[path] = true;
+    collectDiagnosticFieldsFromValue_(value[key], path, out);
+  });
+}
+
+function isFiscalCandidateField_(field) {
+  const raw = String(field || '').toLowerCase();
+  return /receipt|check|cheque|fiscal|fn|fd|fp|fiscaldrive|fiscaldocument|fiscalsign|cash|kkt|ofd|paymentdocument|paymentnumber|transaction|invoice|documentnumber|docnumber|чек|касс|фиск/.test(raw);
+}
+
+function hasConfirmedFiscalSet_(row) {
+  const fields = collectDiagnosticFields_([row]).filter(isFiscalCandidateField_);
+  const groups = {
+    receipt: false,
+    drive: false,
+    document: false,
+    sign: false
+  };
+  fields.forEach(field => {
+    const raw = field.toLowerCase();
+    if (/receipt|check|cheque|cash|чек|касс/.test(raw)) groups.receipt = true;
+    if (/fiscaldrive|fn|фн/.test(raw)) groups.drive = true;
+    if (/fiscaldocument|fd|фд/.test(raw)) groups.document = true;
+    if (/fiscalsign|fp|фп|фпд/.test(raw)) groups.sign = true;
+  });
+  return Object.keys(groups).filter(key => groups[key]).length >= 2;
+}
+
+function matchesWithdrawRows_(diagnosticRow, withdrawRows) {
+  const text = JSON.stringify(diagnosticRow || {});
+  if (!text || text === '{}') return false;
+  return withdrawRows.some(row => {
+    const keys = [
+      row.srid,
+      row.orderId,
+      row.wbRid,
+      normalizeKiForCz_(row.kiz),
+      row.kiz
+    ].map(value => String(value || '').trim()).filter(value => value.length >= 8);
+    return keys.some(key => text.indexOf(key) !== -1);
+  });
+}
+
+function findSuspiciousDocumentCategories_(categories) {
+  const out = [];
+  categories.forEach(category => {
+    const text = JSON.stringify(category || {});
+    if (!isFiscalCandidateField_(text)) return;
+    out.push(text.slice(0, 160));
+  });
+  return out.slice(0, 8);
+}
+
+function formatDiagnosticList_(items) {
+  if (!items || !items.length) return 'нет';
+  return items.slice(0, 12).join(', ') + (items.length > 12 ? ' +' + (items.length - 12) : '');
 }
 
 function fetchWbKizRows_(entity, period) {
@@ -2373,6 +2629,9 @@ function displayErrorStep_(step) {
   if (raw === 'fetchExciseReport') return 'Загрузка отчёта WB по маркировке';
   if (raw === 'fetchStatisticsOrders') return 'Загрузка WB Статистика / заказы';
   if (raw === 'fetchStatisticsSales') return 'Загрузка WB Статистика / продажи';
+  if (raw === 'fetchFinanceAcquiringDetailed') return 'Загрузка WB Финансы / эквайринг';
+  if (raw === 'fetchDocumentsCategories') return 'Загрузка WB Документы / категории';
+  if (raw === 'fetchDocumentsList') return 'Загрузка WB Документы / список';
   if (raw === 'introduceWithoutArchive') return 'КИЗ к вводу не найден в архиве';
   return raw;
 }
