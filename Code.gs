@@ -14,6 +14,7 @@ const MAX_PUBLIC_BATCH_ROWS = 1000;
 
 const SHEETS = {
   settings: 'Настройки',
+  receiptImport: 'Импорт чеков',
   syncLog: 'Журнал синхронизации',
   errors: 'Ошибки'
 };
@@ -22,6 +23,7 @@ const SHEET_ALIASES = {
   'Настройки': ['settings'],
   'Журнал синхронизации': ['sync_log'],
   'Ошибки': ['errors'],
+  'Импорт чеков': ['receipt_import'],
   'Юрлицо 1 - КИЗы к выводу': ['entity_1_withdraw'],
   'Юрлицо 1 - КИЗы к вводу': ['entity_1_introduce'],
   'Юрлицо 1 - Архив выведенных КИЗов': ['entity_1_archive'],
@@ -236,6 +238,21 @@ const ERROR_HEADERS = [
   'Сырой ответ'
 ];
 
+const RECEIPT_IMPORT_HEADERS = [
+  'ID юрлица',
+  'КИ для ЧЗ',
+  'КИЗ / SGTIN',
+  'SRID',
+  'ID заказа WB',
+  'Номер чека',
+  'Дата чека',
+  'Номер ФН',
+  'Цена за единицу',
+  'Валюта цены',
+  'Дата продажи WB',
+  'Комментарий'
+];
+
 const SETTINGS_ALIASES = {
   entityId: ['ID юрлица', 'entityId'],
   legalName: ['Название юрлица', 'legalName'],
@@ -292,6 +309,21 @@ const DATA_ALIASES = {
   comment: ['Комментарий', 'comment']
 };
 
+const RECEIPT_IMPORT_ALIASES = {
+  entityId: ['ID юрлица', 'entityId'],
+  czKi: ['КИ для ЧЗ', 'КИ', 'czKi'],
+  kiz: ['КИЗ / SGTIN', 'КИЗ', 'SGTIN', 'kiz'],
+  srid: ['SRID', 'srid'],
+  orderId: ['ID заказа WB', 'orderId'],
+  fiscalDocNumber: ['Номер чека', 'Номер первичного документа', 'fiscalDocNumber'],
+  fiscalDocDate: ['Дата чека', 'Дата первичного документа', 'fiscalDocDate'],
+  fiscalDriveNumber: ['Номер ФН', 'ФН', 'fiscalDriveNumber'],
+  unitPrice: ['Цена за единицу', 'Цена', 'unitPrice'],
+  priceCurrency: ['Валюта цены', 'Валюта', 'priceCurrency'],
+  wbSaleDate: ['Дата продажи WB', 'Дата продажи', 'wbSaleDate'],
+  comment: ['Комментарий', 'comment']
+};
+
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('WB КИЗы')
@@ -302,6 +334,7 @@ function onOpen() {
     .addItem('5. Диагностика WB Статистика', 'diagnoseWbStatisticsManual')
     .addItem('6. Догрузить цены WB Статистика', 'refreshWbStatisticsSalesManual')
     .addItem('7. Диагностика WB Финансы/Документы', 'diagnoseWbFinanceDocumentsManual')
+    .addItem('8. Импортировать чеки из листа', 'importReceiptDataManual')
     .addToUi();
 }
 
@@ -423,6 +456,7 @@ function setupWorkbook_() {
     ensureSheet_(entity.introduceSheetName, DATA_HEADERS, []);
     ensureSheet_(entity.archiveSheetName, DATA_HEADERS, []);
   });
+  ensureSheet_(SHEETS.receiptImport, RECEIPT_IMPORT_HEADERS, []);
   ensureSheet_(SHEETS.syncLog, LOG_HEADERS, []);
   ensureSheet_(SHEETS.errors, ERROR_HEADERS, []);
 }
@@ -903,6 +937,67 @@ function diagnoseWbFinanceDocumentsManual() {
   return checkedEntities;
 }
 
+function importReceiptDataManual() {
+  setupWorkbook_();
+  const startedAt = now_();
+  const receiptImport = readReceiptImportRows_();
+  const receiptRows = receiptImport.rows;
+  const entities = readSettings_().filter(entity => entity.isActive);
+  let checkedRows = 0;
+  let matchedRows = 0;
+  let updatedRows = 0;
+  const errors = receiptImport.errors.slice();
+
+  entities.forEach(entity => {
+    const stats = importReceiptDataForEntity_(entity, receiptRows);
+    checkedRows += stats.checkedRows;
+    matchedRows += stats.matchedRows;
+    updatedRows += stats.updatedRows;
+    errors.push.apply(errors, stats.errors);
+  });
+
+  const message = 'Импорт чеков: строк импорта ' + receiptRows.length
+    + ', строк к выводу проверено ' + checkedRows
+    + ', совпало ' + matchedRows
+    + ', обновлено ' + updatedRows + '.'
+    + (errors.length ? ' Ошибки: ' + errors.join(' | ') : '');
+
+  appendLog_({
+    startedAt,
+    finishedAt: now_(),
+    entityId: '',
+    legalName: '',
+    periodFrom: '',
+    periodTo: '',
+    rowsLoaded: receiptRows.length,
+    excisePeriodFrom: '',
+    excisePeriodTo: '',
+    exciseRows: '',
+    exciseSridKeys: '',
+    exciseKiKeys: '',
+    withdrawRowsChecked: checkedRows,
+    fiscalMatchedRows: matchedRows,
+    fiscalUpdatedRows: updatedRows,
+    loadedRowsWithFiscalData: '',
+    newRows: '',
+    duplicateRows: '',
+    withdrawNewRows: '',
+    introduceNewRows: '',
+    errors: errors.length,
+    status: errors.length ? 'PARTIAL' : 'OK',
+    message
+  });
+
+  SpreadsheetApp.getActive().toast(message, 'WB КИЗы', 10);
+  return {
+    importRows: receiptRows.length,
+    checkedRows,
+    matchedRows,
+    updatedRows,
+    errors
+  };
+}
+
 function syncYesterdayAllEntities(showToast) {
   const shouldToast = showToast === true;
   setupWorkbook_();
@@ -1264,6 +1359,162 @@ function updateExistingFiscalData_(entity, exciseIndex) {
     matchedRows,
     updatedRows
   };
+}
+
+function readReceiptImportRows_() {
+  const sheet = getOrCreateSheet_(SHEETS.receiptImport, RECEIPT_IMPORT_HEADERS);
+  const values = sheet.getDataRange().getValues();
+  if (values.length < 2) return { rows: [], errors: [] };
+  const headers = values[0].map(String);
+  const rows = [];
+  const errors = [];
+  values.slice(1).forEach((row, index) => {
+    if (!row.some(cell => cell !== '')) return;
+    const sheetRowNumber = index + 2;
+    const normalized = normalizeReceiptImportRow_(
+      objectFromRowWithAliases_(headers, row, RECEIPT_IMPORT_ALIASES),
+      sheetRowNumber
+    );
+    if (normalized) {
+      rows.push(normalized);
+      return;
+    }
+    errors.push('строка импорта ' + sheetRowNumber);
+  });
+  return { rows, errors };
+}
+
+function normalizeReceiptImportRow_(row, sheetRowNumber) {
+  const czKi = normalizeKiForCz_(row.czKi || row.kiz);
+  const rawKi = String(row.kiz || '').trim();
+  const srid = String(row.srid || '').trim();
+  const orderId = String(row.orderId || '').trim();
+  const fiscalDocNumber = String(row.fiscalDocNumber || '').trim();
+  const fiscalDocDate = formatWbDateOnly_(row.fiscalDocDate);
+  if (!fiscalDocNumber || !fiscalDocDate) {
+    appendError_('', 'receiptImport', orderId, rawKi || czKi, 'Строка импорта чеков ' + sheetRowNumber + ': нужен номер и дата чека', '');
+    return null;
+  }
+  if (!czKi && !rawKi && !srid && !orderId) {
+    appendError_('', 'receiptImport', orderId, rawKi, 'Строка импорта чеков ' + sheetRowNumber + ': нужен КИ, SRID или ID заказа WB для склейки', '');
+    return null;
+  }
+  return {
+    sheetRowNumber,
+    entityId: String(row.entityId || '').trim(),
+    czKi,
+    rawKi,
+    srid,
+    orderId,
+    fiscalDocNumber,
+    fiscalDocDate,
+    fiscalDriveNumber: String(row.fiscalDriveNumber || '').trim(),
+    unitPrice: row.unitPrice == null ? '' : String(row.unitPrice).trim(),
+    priceCurrency: String(row.priceCurrency || '').trim(),
+    wbSaleDate: formatWbDateOnly_(row.wbSaleDate || row.fiscalDocDate),
+    comment: String(row.comment || '').trim()
+  };
+}
+
+function importReceiptDataForEntity_(entity, receiptRows) {
+  const withdrawSheet = getOrCreateSheet_(entity.withdrawSheetName, DATA_HEADERS);
+  const withdrawRows = readDataObjects_(withdrawSheet);
+  const applicableReceipts = receiptRows.filter(row => !row.entityId || row.entityId === entity.entityId);
+  const receiptIndex = buildReceiptImportIndex_(applicableReceipts);
+  const timestamp = now_();
+  let changed = false;
+  let matchedRows = 0;
+  let updatedRows = 0;
+
+  withdrawRows.forEach(row => {
+    const receipt = matchReceiptImportForRow_(row, receiptIndex);
+    if (!receipt) return;
+    matchedRows += 1;
+    const before = JSON.stringify([
+      row.czKi,
+      row.unitPrice,
+      row.priceCurrency,
+      row.fiscalDocNumber,
+      row.fiscalDocDate,
+      row.fiscalDriveNumber,
+      row.wbSaleDate,
+      row.fiscalDataSource,
+      row.fiscalDataUpdatedAt,
+      row.comment
+    ]);
+    row.czKi = receipt.czKi || row.czKi || normalizeKiForCz_(row.kiz);
+    row.unitPrice = receipt.unitPrice || row.unitPrice || '';
+    row.priceCurrency = receipt.priceCurrency || row.priceCurrency || '';
+    row.fiscalDocNumber = receipt.fiscalDocNumber;
+    row.fiscalDocDate = receipt.fiscalDocDate;
+    row.fiscalDriveNumber = receipt.fiscalDriveNumber || row.fiscalDriveNumber || '';
+    row.wbSaleDate = receipt.wbSaleDate || row.wbSaleDate || '';
+    row.fiscalDataSource = appendDataSource_(row.fiscalDataSource, 'Импорт чеков');
+    row.fiscalDataUpdatedAt = timestamp;
+    row.updatedAt = timestamp;
+    if (receipt.comment) row.comment = appendRowComment_(row.comment, receipt.comment);
+    const after = JSON.stringify([
+      row.czKi,
+      row.unitPrice,
+      row.priceCurrency,
+      row.fiscalDocNumber,
+      row.fiscalDocDate,
+      row.fiscalDriveNumber,
+      row.wbSaleDate,
+      row.fiscalDataSource,
+      row.fiscalDataUpdatedAt,
+      row.comment
+    ]);
+    if (before !== after) {
+      changed = true;
+      updatedRows += 1;
+    }
+  });
+
+  if (changed) rewriteDataSheet_(withdrawSheet, withdrawRows);
+  return {
+    checkedRows: withdrawRows.length,
+    matchedRows,
+    updatedRows,
+    errors: []
+  };
+}
+
+function buildReceiptImportIndex_(rows) {
+  const index = {
+    bySrid: {},
+    byCzKi: {},
+    byRawKi: {},
+    byOrderId: {}
+  };
+  rows.forEach(row => {
+    addUniqueReceiptKey_(index.bySrid, row.srid, row);
+    addUniqueReceiptKey_(index.byCzKi, row.czKi, row);
+    addUniqueReceiptKey_(index.byRawKi, row.rawKi, row);
+    addUniqueReceiptKey_(index.byOrderId, row.orderId, row);
+  });
+  return index;
+}
+
+function addUniqueReceiptKey_(bucket, key, row) {
+  const normalized = String(key || '').trim();
+  if (!normalized) return;
+  if (bucket[normalized] === false) return;
+  if (bucket[normalized]) {
+    bucket[normalized] = false;
+    return;
+  }
+  bucket[normalized] = row;
+}
+
+function matchReceiptImportForRow_(row, index) {
+  const candidates = [
+    index.bySrid[String(row.srid || '').trim()],
+    index.byCzKi[normalizeKiForCz_(row.czKi || row.kiz)],
+    index.byRawKi[String(row.kiz || '').trim()],
+    index.byOrderId[String(row.orderId || '').trim()]
+  ];
+  return candidates.find(candidate => candidate && candidate !== false) || null;
 }
 
 function buildFiscalSyncMessage_(exciseRowsCount, fiscalStats) {
@@ -2635,6 +2886,7 @@ function displayErrorStep_(step) {
   if (raw === 'fetchFinanceAcquiringDetailed') return 'Загрузка WB Финансы / эквайринг';
   if (raw === 'fetchDocumentsCategories') return 'Загрузка WB Документы / категории';
   if (raw === 'fetchDocumentsList') return 'Загрузка WB Документы / список';
+  if (raw === 'receiptImport') return 'Импорт чеков';
   if (raw === 'introduceWithoutArchive') return 'КИЗ к вводу не найден в архиве';
   return raw;
 }

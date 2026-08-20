@@ -347,39 +347,29 @@
     function csvLine(values){
       return values.map(csvText).join(',');
     }
-    function orderDocumentNumber(row, fallback, documentType){
-      if(documentType === 'Прочее') return normalize(row.orderId) || normalize(row.fiscalDocNumber) || fallback;
+    function orderDocumentNumber(row, fallback){
       return normalize(row.fiscalDocNumber) || fallback;
     }
-    function orderDocumentDate(row, fallbackDate, documentType){
-      if(documentType === 'Прочее'){
-        return csvDate(row.wbSaleDate) || csvDate(row.wbDate) || csvDate(row.syncDate) || fallbackDate;
-      }
+    function orderDocumentDate(row, fallbackDate){
       return csvDate(row.fiscalDocDate) || fallbackDate;
     }
     function missingWithdrawFields(entity, rows){
       const missing = [];
-      const documentType = normalize(entity.czDocumentType) || 'Кассовый чек';
       if(!normalize(entity.inn)) missing.push('ИНН');
       if(!normalize(entity.fiasId)) missing.push('ФИАС / МОД');
       rows.forEach((row, index) => {
         const label = `строка ${index + 1}`;
         if(!normalize(row.czKi || row.kiz)) missing.push(`${label}: КИ`);
         if(!normalize(row.unitPrice)) missing.push(`${label}: цена`);
-        if(documentType === 'Прочее'){
-          if(!normalize(row.orderId)) missing.push(`${label}: ID заказа WB`);
-          if(!orderDocumentDate(row, '')) missing.push(`${label}: дата заказа/продажи`);
-        } else {
-          if(!normalize(row.fiscalDocNumber)) missing.push(`${label}: номер чека`);
-          if(!normalize(row.fiscalDocDate)) missing.push(`${label}: дата чека`);
-        }
+        if(!normalize(row.fiscalDocNumber)) missing.push(`${label}: номер чека`);
+        if(!normalize(row.fiscalDocDate)) missing.push(`${label}: дата чека`);
       });
       return missing;
     }
     function buildWithdrawCsv(entity, rows){
       const date = todayIso();
       const fallbackDocumentNumber = primaryDocumentNumber(entity, 'OUT', date);
-      const documentType = normalize(entity.czDocumentType) || 'Кассовый чек';
+      const documentType = 'Кассовый чек';
       const reason = normalize(entity.czReason) || 'Дистанционная продажа';
       const version = normalize(entity.czVersion) || '7';
       const lines = [
@@ -406,7 +396,7 @@
           documentType,
           '',
           '',
-          documentType === 'Прочее' ? 'заказ (отправление)' : '',
+          '',
           entity.fiasId || '',
           '',
           version
@@ -424,9 +414,9 @@
           normalize(row.czKi) || normalizeKiForCz(row.kiz),
           row.unitPrice,
           documentType,
-          orderDocumentNumber(row, fallbackDocumentNumber, documentType),
-          orderDocumentDate(row, date, documentType),
-          documentType === 'Прочее' ? 'заказ (отправление)' : ''
+          orderDocumentNumber(row, fallbackDocumentNumber),
+          orderDocumentDate(row, date),
+          ''
         ]))
       ];
       return lines.join('\n');
