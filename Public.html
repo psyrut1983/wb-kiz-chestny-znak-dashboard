@@ -448,11 +448,11 @@
     function csvLine(values){
       return values.map(csvText).join(',');
     }
-    function orderDocumentNumber(row, fallback){
-      return normalize(row.fiscalDocNumber) || fallback;
+    function orderDocumentNumber(row){
+      return normalize(row.fiscalDocNumber);
     }
-    function orderDocumentDate(row, fallbackDate){
-      return csvDate(row.fiscalDocDate) || fallbackDate;
+    function orderDocumentDate(row){
+      return csvDate(row.fiscalDocDate);
     }
     function missingWithdrawFields(entity, rows){
       const missing = [];
@@ -461,15 +461,11 @@
         const label = `строка ${index + 1}`;
         if(!normalize(row.czKi || row.kiz)) missing.push(`${label}: КИ`);
         if(!normalize(row.unitPrice)) missing.push(`${label}: цена`);
-        if(!normalize(row.fiscalDocNumber)) missing.push(`${label}: номер чека`);
-        if(!normalize(row.fiscalDocDate)) missing.push(`${label}: дата чека`);
       });
       return missing;
     }
     function buildWithdrawCsv(entity, rows){
       const date = todayIso();
-      const fallbackDocumentNumber = primaryDocumentNumber(entity, 'OUT', date);
-      const documentType = 'Кассовый чек';
       const reason = normalize(entity.czReason) || 'Дистанционная продажа';
       const version = normalize(entity.czVersion) || '7';
       const lines = [
@@ -510,14 +506,18 @@
           'Дата первичного документа',
           'Наименование первичного документа'
         ]),
-        ...rows.map(row => csvLine([
-          normalize(row.czKi) || normalizeKiForCz(row.kiz),
-          row.unitPrice,
-          documentType,
-          orderDocumentNumber(row, fallbackDocumentNumber),
-          orderDocumentDate(row, date),
-          ''
-        ]))
+        ...rows.map(row => {
+          const documentNumber = orderDocumentNumber(row);
+          const documentDate = orderDocumentDate(row);
+          return csvLine([
+            normalize(row.czKi) || normalizeKiForCz(row.kiz),
+            row.unitPrice,
+            documentNumber || documentDate ? 'Кассовый чек' : '',
+            documentNumber,
+            documentDate,
+            ''
+          ]);
+        })
       ];
       return lines.join('\n');
     }

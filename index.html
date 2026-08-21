@@ -844,12 +844,12 @@ function csvLine(values){
   return values.map(csvText).join(',');
 }
 
-function orderDocumentNumber(row, fallback){
-  return normalize(row['Номер чека']) || fallback;
+function orderDocumentNumber(row){
+  return normalize(row['Номер чека']);
 }
 
-function orderDocumentDate(row, fallbackDate){
-  return csvDate(row['Дата чека']) || fallbackDate;
+function orderDocumentDate(row){
+  return csvDate(row['Дата чека']);
 }
 
 function missingWithdrawFields(entity, rows){
@@ -859,16 +859,12 @@ function missingWithdrawFields(entity, rows){
     const label = `строка ${index + 1}`;
     if(!normalize(row['КИ для ЧЗ'] || row['КИЗ / SGTIN'])) missing.push(`${label}: КИ`);
     if(!normalize(row['Цена за единицу'])) missing.push(`${label}: цена`);
-    if(!normalize(row['Номер чека'])) missing.push(`${label}: номер чека`);
-    if(!normalize(row['Дата чека'])) missing.push(`${label}: дата чека`);
   });
   return missing;
 }
 
 function buildWithdrawCsv(entity, rows){
   const date = todayIso();
-  const fallbackDocumentNumber = primaryDocumentNumber(entity, 'OUT', date);
-  const documentType = 'Кассовый чек';
   const reason = normalize(entity.czReason) || 'Дистанционная продажа';
   const version = normalize(entity.czVersion) || '7';
   const lines = [
@@ -909,14 +905,18 @@ function buildWithdrawCsv(entity, rows){
       'Дата первичного документа',
       'Наименование первичного документа'
     ]),
-    ...rows.map(row => csvLine([
-      normalize(row['КИ для ЧЗ']) || normalizeKiForCz(row['КИЗ / SGTIN']),
-      row['Цена за единицу'],
-      documentType,
-      orderDocumentNumber(row, fallbackDocumentNumber),
-      orderDocumentDate(row, date),
-      ''
-    ]))
+    ...rows.map(row => {
+      const documentNumber = orderDocumentNumber(row);
+      const documentDate = orderDocumentDate(row);
+      return csvLine([
+        normalize(row['КИ для ЧЗ']) || normalizeKiForCz(row['КИЗ / SGTIN']),
+        row['Цена за единицу'],
+        documentNumber || documentDate ? 'Кассовый чек' : '',
+        documentNumber,
+        documentDate,
+        ''
+      ]);
+    })
   ];
   return lines.join('\n');
 }
