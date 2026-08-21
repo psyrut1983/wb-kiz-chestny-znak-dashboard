@@ -443,6 +443,104 @@ function confirmPublicIntroduce(entityId, keys) {
   };
 }
 
+function importPublicWbExcelRows(entityId, rows) {
+  if (!Array.isArray(rows)) throw new Error('Excel-строки не переданы');
+  if (rows.length > MAX_PUBLIC_BATCH_ROWS * 5) {
+    throw new Error('Слишком большой Excel-импорт: максимум ' + (MAX_PUBLIC_BATCH_ROWS * 5) + ' строк за раз');
+  }
+
+  const entity = getEntityById_(entityId);
+  const timestamp = now_();
+  const importedRows = [];
+  let skipped = 0;
+
+  rows.forEach(sourceRow => {
+    const row = normalizePublicWbExcelRow_(entity, sourceRow, timestamp);
+    if (!row) {
+      skipped += 1;
+      return;
+    }
+    importedRows.push(row);
+  });
+
+  const result = appendNewDataRows_(entity, importedRows);
+  const status = 'Excel WB: продаж ' + importedRows.length
+    + ', добавлено ' + result.withdrawNewRows
+    + ', дублей ' + result.duplicateRows
+    + ', пропущено ' + skipped;
+  updateSettingsSyncStatus_(entity.entityId, status);
+
+  return {
+    received: rows.length,
+    soldRows: importedRows.length,
+    imported: result.withdrawNewRows,
+    duplicates: result.duplicateRows,
+    skipped,
+    message: status
+  };
+}
+
+function normalizePublicWbExcelRow_(entity, sourceRow, timestamp) {
+  const operationType = String(sourceRow.wbMarkingOperationType || '').trim();
+  const wbStatus = String(sourceRow.wbStatus || '').trim();
+  if (isRejectedWbExcelValue_(operationType) || isRejectedWbExcelValue_(wbStatus)) return null;
+  if (!isSaleWbExcelValue_(operationType) && !isSaleWbExcelValue_(wbStatus)) return null;
+
+  const kiz = String(sourceRow.kiz || '').trim();
+  if (!kiz) return null;
+
+  const orderId = String(sourceRow.taskNumber || sourceRow.orderId || '').trim();
+  const dedupeKey = [entity.entityId, 'withdraw', kiz, orderId].join('|');
+  const saleDate = formatWbDateOnly_(sourceRow.wbSaleDate || sourceRow.fiscalDocDate || sourceRow.wbDate);
+
+  return {
+    syncDate: Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd'),
+    entityId: entity.entityId,
+    legalName: entity.legalName,
+    inn: entity.inn,
+    operation: 'withdraw',
+    kiz,
+    article: String(sourceRow.article || '').trim(),
+    barcode: String(sourceRow.sticker || sourceRow.barcode || '').trim(),
+    orderId,
+    srid: String(sourceRow.srid || '').trim(),
+    supplierStatus: '',
+    wbStatus: wbStatus || 'Продано',
+    wbDate: formatWbDateOnly_(sourceRow.wbDate || saleDate),
+    status: 'new',
+    source: 'WB Excel',
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    dedupeKey,
+    czKi: normalizeKiForCz_(kiz),
+    unitPrice: String(sourceRow.unitPrice || '').trim(),
+    priceCurrency: String(sourceRow.priceCurrency || '').trim(),
+    fiscalDocNumber: String(sourceRow.fiscalDocNumber || '').trim(),
+    fiscalDocDate: formatWbDateOnly_(sourceRow.fiscalDocDate || saleDate),
+    fiscalDriveNumber: String(sourceRow.fiscalDriveNumber || '').trim(),
+    wbSaleDate: saleDate,
+    wbSaleAmount: String(sourceRow.wbSaleAmount || sourceRow.unitPrice || '').trim(),
+    wbRid: String(sourceRow.wbRid || sourceRow.srid || '').trim(),
+    wbMarkingOperationType: operationType || 'Продажа',
+    fiscalDataSource: 'WB Excel КИЗ',
+    fiscalDataUpdatedAt: timestamp,
+    comment: 'Импорт из Excel Wildberries'
+  };
+}
+
+function isSaleWbExcelValue_(value) {
+  const text = String(value || '').trim().toLowerCase();
+  return text === 'продажа' || text === 'продано' || text === 'sale' || text === 'sold';
+}
+
+function isRejectedWbExcelValue_(value) {
+  const text = String(value || '').trim().toLowerCase();
+  return text.indexOf('возврат') !== -1
+    || text.indexOf('отказ') !== -1
+    || text.indexOf('отмен') !== -1
+    || text.indexOf('брак') !== -1;
+}
+
 function setupWorkbook() {
   setupWorkbook_();
   SpreadsheetApp.getActive().toast('Структура таблицы готова', 'WB КИЗы', 5);

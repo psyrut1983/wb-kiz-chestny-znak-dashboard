@@ -76,7 +76,9 @@
         <div class="sub">Публичная панель: доступ есть у любого, кому дали ссылку</div>
       </div>
       <div class="actions">
+        <button class="btn" id="wbExcelBtn" type="button">Загрузить Excel WB</button>
         <button class="btn primary" id="refreshBtn" type="button">Обновить</button>
+        <input id="wbExcelInput" type="file" accept=".xlsx,.xls" hidden>
       </div>
     </div>
 
@@ -128,6 +130,7 @@
   </main>
   <div class="toast" id="toast"></div>
 
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script>
     const state = {
       data: null,
@@ -150,6 +153,8 @@
       syncInfo: document.getElementById('syncInfo'),
       toast: document.getElementById('toast'),
       refresh: document.getElementById('refreshBtn'),
+      wbExcel: document.getElementById('wbExcelBtn'),
+      wbExcelInput: document.getElementById('wbExcelInput'),
       withdrawXml: document.getElementById('withdrawXmlBtn'),
       introduceXml: document.getElementById('introduceXmlBtn'),
       withdrawConfirm: document.getElementById('withdrawConfirmBtn'),
@@ -169,6 +174,97 @@
       const text = normalize(value);
       const match = text.match(/\d{4}-\d{2}-\d{2}/);
       return match ? match[0] : text;
+    }
+    function normalizeHeader(value){
+      return normalize(value).replace(/\s+/g, ' ').toLowerCase();
+    }
+    function valueByNames(row, names){
+      for(const name of names){
+        if(row[name] != null && normalize(row[name])) return normalize(row[name]);
+      }
+      const entries = Object.entries(row);
+      for(const name of names){
+        const target = normalizeHeader(name);
+        const match = entries.find(([key, value]) => normalizeHeader(key) === target && normalize(value));
+        if(match) return normalize(match[1]);
+      }
+      return '';
+    }
+    function sheetRows(workbook, expectedName){
+      const sheetName = workbook.SheetNames.find(name => normalizeHeader(name) === normalizeHeader(expectedName))
+        || workbook.SheetNames.find(name => normalizeHeader(name).includes(normalizeHeader(expectedName)));
+      if(!sheetName) return [];
+      const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], {
+        defval: '',
+        raw: false,
+        dateNF: 'yyyy-mm-dd'
+      });
+      return rows.map(row => {
+        const out = {};
+        Object.entries(row).forEach(([key, value]) => out[normalize(key)] = normalize(value));
+        return out;
+      });
+    }
+    function assemblyIndex(rows){
+      const index = new Map();
+      rows.forEach(row => {
+        const task = valueByNames(row, ['№ задания', 'Номер задания', 'ID задания', 'Сборочное задание']);
+        if(task) index.set(task, row);
+      });
+      return index;
+    }
+    function isSaleText(value){
+      const text = normalize(value).toLowerCase();
+      return text === 'продажа' || text === 'продано' || text === 'sale' || text === 'sold';
+    }
+    function isRejectedText(value){
+      const text = normalize(value).toLowerCase();
+      return text.includes('возврат') || text.includes('отказ') || text.includes('отмен') || text.includes('брак');
+    }
+    function parseWbWorkbook(workbook){
+      const kizRows = sheetRows(workbook, 'КИЗ');
+      if(!kizRows.length) throw new Error('В Excel не найден лист «КИЗ» или он пустой');
+      const taskRows = sheetRows(workbook, 'Сборочные задания');
+      const tasks = assemblyIndex(taskRows);
+      const parsed = [];
+      let skippedNotSold = 0;
+      let skippedNoKiz = 0;
+
+      kizRows.forEach(row => {
+        const taskNumber = valueByNames(row, ['№ задания', 'Номер задания', 'ID задания', 'Сборочное задание']);
+        const task = tasks.get(taskNumber) || {};
+        const operationType = valueByNames(row, ['Тип операции', 'Операция']);
+        const wbStatus = valueByNames(task, ['Статус', 'Статус WB', 'Статус заказа', 'Статус сборочного задания']);
+        const kiz = valueByNames(row, ['КИЗ', 'КИЗ / SGTIN', 'SGTIN', 'Код маркировки']);
+        if(!kiz){
+          skippedNoKiz += 1;
+          return;
+        }
+        if(isRejectedText(operationType) || isRejectedText(wbStatus) || (!isSaleText(operationType) && !isSaleText(wbStatus))){
+          skippedNotSold += 1;
+          return;
+        }
+        parsed.push({
+          taskNumber,
+          sticker: valueByNames(row, ['Стикер', 'Баркод', 'ШК']),
+          kiz,
+          fiscalDocNumber: valueByNames(row, ['Номер чека', 'Чек', 'Номер первичного документа']),
+          unitPrice: valueByNames(row, ['Стоимость', 'Цена за единицу', 'Цена']),
+          priceCurrency: valueByNames(row, ['Валюта', 'Валюта цены']),
+          fiscalDriveNumber: valueByNames(row, ['Номер фискального накопителя', 'Номер ФН', 'ФН']),
+          fiscalDocDate: csvDate(valueByNames(row, ['Дата', 'Дата чека', 'Дата операции'])),
+          wbSaleDate: csvDate(valueByNames(row, ['Дата', 'Дата продажи WB', 'Дата операции'])),
+          wbSaleAmount: valueByNames(row, ['Стоимость', 'Сумма продажи WB']),
+          wbMarkingOperationType: operationType,
+          legalSaleFlag: valueByNames(row, ['Признак продажи юрлицу']),
+          wbStatus,
+          article: valueByNames(task, ['Артикул продавца', 'Артикул WB', 'Артикул', 'Номенклатура']),
+          srid: valueByNames(task, ['SRID', 'Rid', 'RID WB']),
+          wbDate: csvDate(valueByNames(task, ['Дата заказа', 'Дата создания', 'Дата']))
+        });
+      });
+
+      return {rows: parsed, sourceRows: kizRows.length, skippedNotSold, skippedNoKiz};
     }
     function cdata(value){return normalize(value).replaceAll(']]>', ']]]]><![CDATA[>')}
     function xmlText(value){
@@ -309,6 +405,7 @@
     function syncButtons(){
       const hasEntity = Boolean(selectedEntity());
       el.refresh.disabled = state.busy;
+      el.wbExcel.disabled = state.busy || !hasEntity;
       el.withdrawXml.disabled = state.busy || !hasEntity || !state.selected.withdraw.size;
       el.introduceXml.disabled = state.busy || !hasEntity || !state.selected.introduce.size;
       el.withdrawConfirm.disabled = state.busy || !hasEntity || !state.selected.withdraw.size;
@@ -490,6 +587,37 @@ ${products}
         setBusy(false);
       }
     }
+    async function importWbExcel(file){
+      const entity = selectedEntity();
+      if(!entity){
+        toast('Сначала выбери юрлицо');
+        return;
+      }
+      if(!window.XLSX){
+        toast('Библиотека чтения Excel ещё загружается. Повтори через пару секунд.');
+        return;
+      }
+      setBusy(true);
+      setStatus(`Читаю Excel: ${file.name}...`);
+      try{
+        const buffer = await file.arrayBuffer();
+        const workbook = XLSX.read(buffer, {type:'array', cellDates:true});
+        const parsed = parseWbWorkbook(workbook);
+        if(!parsed.rows.length){
+          throw new Error(`В файле нет продаж к выводу. Пропущено не-продаж: ${parsed.skippedNotSold}, без КИЗ: ${parsed.skippedNoKiz}`);
+        }
+        const result = await serverRun('importPublicWbExcelRows', entity.id, parsed.rows);
+        toast(`Импорт WB: добавлено ${fmt(result.imported)}, дублей ${fmt(result.duplicates)}, пропущено ${fmt(result.skipped)}`);
+        setStatus(`Excel WB загружен: продаж ${fmt(result.soldRows)}, добавлено ${fmt(result.imported)}, дублей ${fmt(result.duplicates)}`, 'good');
+        await refresh();
+      }catch(error){
+        setStatus(error.message, 'error');
+        toast(error.message);
+      }finally{
+        el.wbExcelInput.value = '';
+        setBusy(false);
+      }
+    }
 
     document.addEventListener('click', event => {
       const entityBtn = event.target.closest('[data-entity]');
@@ -522,6 +650,11 @@ ${products}
     });
 
     el.refresh.addEventListener('click', refresh);
+    el.wbExcel.addEventListener('click', () => el.wbExcelInput.click());
+    el.wbExcelInput.addEventListener('change', event => {
+      const file = event.target.files && event.target.files[0];
+      if(file) importWbExcel(file);
+    });
     el.withdrawXml.addEventListener('click', () => downloadXml('withdraw'));
     el.introduceXml.addEventListener('click', () => downloadXml('introduce'));
     el.withdrawConfirm.addEventListener('click', () => confirmOperation('withdraw'));

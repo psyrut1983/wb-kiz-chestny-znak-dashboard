@@ -55,6 +55,7 @@ https://docs.google.com/spreadsheets/d/1Ol0SdvkxilSx5wnjwiUqWjDL6lpzWU8bGR5-xERW
 - Запасная догрузка цен WB Статистика проверяет `GET https://statistics-api.wildberries.ru/api/v1/supplier/sales`: она заполняет цену и дату продажи по `SRID`, но оставляет чековые поля пустыми, потому что `sales` не отдаёт номер кассового чека.
 - Диагностика WB Финансы/Документы проверяет `POST https://finance-api.wildberries.ru/api/finance/v1/acquiring/detailed`, `GET https://documents-api.wildberries.ru/api/v1/documents/categories?locale=ru` и `GET https://documents-api.wildberries.ru/api/v1/documents/list?locale=ru&beginTime=...&endTime=...`. Она считает поля-кандидаты на фискальные реквизиты и совпадения со строками к выводу, но не считает `invoiceNumber`, `transactionId`, `SRID` или `ID заказа WB` кассовым чеком без набора фискальных признаков.
 - Лист `Импорт чеков` нужен для ручного или внешнего источника настоящих чековых реквизитов. Скрипт переносит оттуда `Номер чека`, `Дата чека`, `Номер ФН`, цену, валюту и дату продажи в строки к выводу.
+- Публичная HTML-панель умеет загружать ручной Excel-архив Wildberries: из листа `КИЗ` берутся только строки с `Тип операции = Продажа`, а возвраты, отказы, отмены и брак не попадают в лист `КИЗы к выводу`.
 - Статус WB `canceled_by_client` попадает во ввод обратно в оборот.
 - КИЗ к вводу обратно добавляется только если он уже есть в архиве.
 - Отмены продавца, отмены в первый час и брак пропускаются.
@@ -70,7 +71,7 @@ https://docs.google.com/spreadsheets/d/1Ol0SdvkxilSx5wnjwiUqWjDL6lpzWU8bGR5-xERW
 
 1. В Apps Script добавить HTML-файл с именем `Public`.
 2. Вставить туда содержимое `Public.html` из этого репозитория.
-3. В `Code.gs` должны быть функции `doGet`, `getPublicDashboardData`, `confirmPublicWithdraw`, `confirmPublicIntroduce`.
+3. В `Code.gs` должны быть функции `doGet`, `getPublicDashboardData`, `importPublicWbExcelRows`, `confirmPublicWithdraw`, `confirmPublicIntroduce`.
 4. `Deploy` -> `New deployment` -> тип `Web app`.
 5. `Execute as`: `Me`.
 6. `Who has access`: `Anyone`.
@@ -98,10 +99,21 @@ HTML-панель не открывается внутри Google Таблицы
 
 - читать лист `Настройки`;
 - по названиям из `Настройки` читать листы конкретных юрлиц;
+- импортировать Excel-файл Wildberries для выбранного юрлица;
 - показывать КИЗы к выводу, к вводу обратно и архив;
 - выбирать строки;
 - формировать файлы для Честного знака;
 - после ручного подтверждения переносить строки через Google Sheets API.
+
+Импорт Excel Wildberries:
+
+- кнопка `Загрузить Excel WB` читает локальный `.xlsx`/`.xls` в браузере;
+- основной лист в файле: `КИЗ`;
+- лист `Сборочные задания` используется дополнительно для статуса, артикула и `SRID`, если он есть в файле;
+- в лист `КИЗы к выводу` добавляются только продажи: `Тип операции = Продажа` или статус сборочного задания `Продано`;
+- строки с `Возврат`, `Отказ`, `Отмена`, `Брак` пропускаются;
+- юрлицо выбирается в панели до загрузки файла;
+- дубли отсекаются по тому же ключу: юрлицо + операция + КИЗ + заказ WB.
 
 CSV для вывода из оборота:
 

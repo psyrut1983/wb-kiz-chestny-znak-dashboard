@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
 :root{
   --bg:#0c0c0c;
@@ -109,7 +110,9 @@ input:focus{border-color:var(--accent)}
     </div>
     <div class="toolbar">
       <button class="btn primary" id="loginBtn" type="button">Войти Google</button>
+      <button class="btn" id="wbExcelBtn" type="button">Загрузить Excel WB</button>
       <button class="btn" id="refreshBtn" type="button">Обновить</button>
+      <input id="wbExcelInput" type="file" accept=".xlsx,.xls" hidden>
     </div>
   </div>
 </header>
@@ -293,6 +296,8 @@ const el = {
   toast: document.getElementById('toast'),
   buttons: {
     login: document.getElementById('loginBtn'),
+    wbExcel: document.getElementById('wbExcelBtn'),
+    wbExcelInput: document.getElementById('wbExcelInput'),
     refresh: document.getElementById('refreshBtn'),
     saveConfig: document.getElementById('saveConfigBtn'),
     withdrawXml: document.getElementById('withdrawXmlBtn'),
@@ -356,6 +361,104 @@ function csvDate(value){
 
 function cdata(value){
   return normalize(value).replaceAll(']]>', ']]]]><![CDATA[>');
+}
+
+function normalizeHeader(value){
+  return normalize(value).replace(/\s+/g, ' ').toLowerCase();
+}
+
+function valueByNames(row, names){
+  for(const name of names){
+    if(row[name] != null && normalize(row[name])) return normalize(row[name]);
+  }
+  const entries = Object.entries(row);
+  for(const name of names){
+    const target = normalizeHeader(name);
+    const match = entries.find(([key, value]) => normalizeHeader(key) === target && normalize(value));
+    if(match) return normalize(match[1]);
+  }
+  return '';
+}
+
+function sheetRows(workbook, expectedName){
+  const sheetName = workbook.SheetNames.find(name => normalizeHeader(name) === normalizeHeader(expectedName))
+    || workbook.SheetNames.find(name => normalizeHeader(name).includes(normalizeHeader(expectedName)));
+  if(!sheetName) return [];
+  const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], {
+    defval: '',
+    raw: false,
+    dateNF: 'yyyy-mm-dd'
+  });
+  return rows.map(row => {
+    const out = {};
+    Object.entries(row).forEach(([key, value]) => out[normalize(key)] = normalize(value));
+    return out;
+  });
+}
+
+function assemblyIndex(rows){
+  const index = new Map();
+  rows.forEach(row => {
+    const task = valueByNames(row, ['№ задания', 'Номер задания', 'ID задания', 'Сборочное задание']);
+    if(task) index.set(task, row);
+  });
+  return index;
+}
+
+function isSaleText(value){
+  const text = normalize(value).toLowerCase();
+  return text === 'продажа' || text === 'продано' || text === 'sale' || text === 'sold';
+}
+
+function isRejectedText(value){
+  const text = normalize(value).toLowerCase();
+  return text.includes('возврат') || text.includes('отказ') || text.includes('отмен') || text.includes('брак');
+}
+
+function parseWbWorkbook(workbook){
+  const kizRows = sheetRows(workbook, 'КИЗ');
+  if(!kizRows.length) throw new Error('В Excel не найден лист «КИЗ» или он пустой');
+  const taskRows = sheetRows(workbook, 'Сборочные задания');
+  const tasks = assemblyIndex(taskRows);
+  const parsed = [];
+  let skippedNotSold = 0;
+  let skippedNoKiz = 0;
+
+  kizRows.forEach(row => {
+    const taskNumber = valueByNames(row, ['№ задания', 'Номер задания', 'ID задания', 'Сборочное задание']);
+    const task = tasks.get(taskNumber) || {};
+    const operationType = valueByNames(row, ['Тип операции', 'Операция']);
+    const wbStatus = valueByNames(task, ['Статус', 'Статус WB', 'Статус заказа', 'Статус сборочного задания']);
+    const kiz = valueByNames(row, ['КИЗ', 'КИЗ / SGTIN', 'SGTIN', 'Код маркировки']);
+    if(!kiz){
+      skippedNoKiz += 1;
+      return;
+    }
+    if(isRejectedText(operationType) || isRejectedText(wbStatus) || (!isSaleText(operationType) && !isSaleText(wbStatus))){
+      skippedNotSold += 1;
+      return;
+    }
+    parsed.push({
+      taskNumber,
+      sticker: valueByNames(row, ['Стикер', 'Баркод', 'ШК']),
+      kiz,
+      fiscalDocNumber: valueByNames(row, ['Номер чека', 'Чек', 'Номер первичного документа']),
+      unitPrice: valueByNames(row, ['Стоимость', 'Цена за единицу', 'Цена']),
+      priceCurrency: valueByNames(row, ['Валюта', 'Валюта цены']),
+      fiscalDriveNumber: valueByNames(row, ['Номер фискального накопителя', 'Номер ФН', 'ФН']),
+      fiscalDocDate: csvDate(valueByNames(row, ['Дата', 'Дата чека', 'Дата операции'])),
+      wbSaleDate: csvDate(valueByNames(row, ['Дата', 'Дата продажи WB', 'Дата операции'])),
+      wbSaleAmount: valueByNames(row, ['Стоимость', 'Сумма продажи WB']),
+      wbMarkingOperationType: operationType,
+      legalSaleFlag: valueByNames(row, ['Признак продажи юрлицу']),
+      wbStatus,
+      article: valueByNames(task, ['Артикул продавца', 'Артикул WB', 'Артикул', 'Номенклатура']),
+      srid: valueByNames(task, ['SRID', 'Rid', 'RID WB']),
+      wbDate: csvDate(valueByNames(task, ['Дата заказа', 'Дата создания', 'Дата']))
+    });
+  });
+
+  return {rows: parsed, sourceRows: kizRows.length, skippedNotSold, skippedNoKiz};
 }
 
 function headerMap(headers){
@@ -684,6 +787,7 @@ function renderFooter(){
 function syncActionButtons(){
   const entity = selectedEntity();
   const hasEntity = Boolean(entity);
+  el.buttons.wbExcel.disabled = state.busy || state.mode !== 'google' || !hasEntity;
   el.buttons.withdrawXml.disabled = state.busy || !hasEntity || !state.selected.withdraw.size;
   el.buttons.introduceXml.disabled = state.busy || !hasEntity || !state.selected.introduce.size;
   el.buttons.confirmWithdraw.disabled = state.busy || !hasEntity || !state.selected.withdraw.size;
@@ -923,6 +1027,109 @@ function mergeArchiveRows(currentRows, rowsToAdd){
   return Array.from(existing.values());
 }
 
+function wbExcelDataRow(entity, sourceRow){
+  const now = nowText();
+  const kiz = normalize(sourceRow.kiz);
+  const orderId = normalize(sourceRow.taskNumber || sourceRow.orderId);
+  const saleDate = csvDate(sourceRow.wbSaleDate || sourceRow.fiscalDocDate || sourceRow.wbDate);
+  const row = {
+    'Дата загрузки': todayIso(),
+    'ID юрлица': entity.id,
+    'Название юрлица': entity.legalName,
+    'ИНН': entity.inn,
+    'Операция': 'К выводу из оборота',
+    'КИЗ / SGTIN': kiz,
+    'Артикул': sourceRow.article || '',
+    'Баркод': sourceRow.sticker || '',
+    'ID заказа WB': orderId,
+    'SRID': sourceRow.srid || '',
+    'Статус продавца WB': '',
+    'Статус WB': sourceRow.wbStatus || 'Продано',
+    'Дата заказа WB': sourceRow.wbDate || saleDate,
+    'Состояние строки': 'Новая строка',
+    'Источник': 'WB Excel',
+    'Создано': now,
+    'Обновлено': now,
+    'Ключ дубля': [entity.id, 'withdraw', kiz, orderId].join('|'),
+    'КИ для ЧЗ': normalizeKiForCz(kiz),
+    'Цена за единицу': sourceRow.unitPrice || '',
+    'Валюта цены': sourceRow.priceCurrency || '',
+    'Номер чека': sourceRow.fiscalDocNumber || '',
+    'Дата чека': sourceRow.fiscalDocDate || saleDate,
+    'Номер ФН': sourceRow.fiscalDriveNumber || '',
+    'Дата продажи WB': saleDate,
+    'Сумма продажи WB': sourceRow.wbSaleAmount || sourceRow.unitPrice || '',
+    'RID WB': sourceRow.srid || '',
+    'Тип операции маркировки WB': sourceRow.wbMarkingOperationType || 'Продажа',
+    'Источник фискальных данных': 'WB Excel КИЗ',
+    'Дата обновления фискальных данных': now,
+    'Комментарий': 'Импорт из Excel Wildberries'
+  };
+  row.__key = makeRowKey(row);
+  return row;
+}
+
+async function importWbExcel(file){
+  if(state.mode !== 'google'){
+    toast('Сначала нажми «Войти Google»', 'error');
+    return;
+  }
+  const entity = selectedEntity();
+  if(!entity){
+    toast('Сначала выбери юрлицо', 'error');
+    return;
+  }
+  if(!window.XLSX){
+    toast('Библиотека чтения Excel ещё загружается. Повтори через пару секунд.', 'error');
+    return;
+  }
+
+  setBusy(true);
+  try{
+    setStatus(`Читаю Excel: ${file.name}...`);
+    const buffer = await file.arrayBuffer();
+    const workbook = XLSX.read(buffer, {type:'array', cellDates:true});
+    const parsed = parseWbWorkbook(workbook);
+    if(!parsed.rows.length){
+      throw new Error(`В файле нет продаж к выводу. Пропущено не-продаж: ${parsed.skippedNotSold}, без КИЗ: ${parsed.skippedNoKiz}`);
+    }
+
+    const withdrawKeys = new Set(entity.withdraw.rows.map(makeRowKey));
+    const archiveKiz = new Set(entity.archive.rows.map(row => normalize(row['КИЗ / SGTIN'])).filter(Boolean));
+    const introduceKiz = new Set(entity.introduce.rows.map(row => normalize(row['КИЗ / SGTIN'])).filter(Boolean));
+    const imported = [];
+    let duplicates = 0;
+
+    parsed.rows.forEach(sourceRow => {
+      const row = wbExcelDataRow(entity, sourceRow);
+      const kiz = normalize(row['КИЗ / SGTIN']);
+      if(withdrawKeys.has(row.__key) || archiveKiz.has(kiz) || introduceKiz.has(kiz)){
+        duplicates += 1;
+        return;
+      }
+      withdrawKeys.add(row.__key);
+      imported.push(row);
+    });
+
+    if(imported.length){
+      entity.withdraw.rows.push(...imported);
+      await persistEntity(entity, ['withdraw']);
+    }
+    state.selected.withdraw.clear();
+    state.generated.withdraw.clear();
+    render();
+    setStatus(`Excel WB загружен: продаж ${fmt(parsed.rows.length)}, добавлено ${fmt(imported.length)}, дублей ${fmt(duplicates)}`, 'good');
+    toast(`Импорт WB: добавлено ${fmt(imported.length)}, дублей ${fmt(duplicates)}`);
+  }catch(error){
+    setStatus(error.message, 'error');
+    toast(error.message, 'error');
+  }finally{
+    el.buttons.wbExcelInput.value = '';
+    setBusy(false);
+    syncActionButtons();
+  }
+}
+
 async function persistEntity(entity, kinds){
   setBusy(true);
   try{
@@ -948,6 +1155,11 @@ async function persistEntity(entity, kinds){
 function bindEvents(){
   el.buttons.saveConfig.addEventListener('click', saveConfig);
   el.buttons.login.addEventListener('click', googleLogin);
+  el.buttons.wbExcel.addEventListener('click', () => el.buttons.wbExcelInput.click());
+  el.buttons.wbExcelInput.addEventListener('change', event => {
+    const file = event.target.files && event.target.files[0];
+    if(file) withErrorBoundary(() => importWbExcel(file));
+  });
   el.buttons.refresh.addEventListener('click', () => {
     if(state.mode === 'google') loadFromSheets();
     else toast('Сначала нажми «Войти Google»', 'error');
