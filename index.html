@@ -851,7 +851,6 @@ function orderDocumentDate(row, fallbackDate){
 function missingWithdrawFields(entity, rows){
   const missing = [];
   if(!normalize(entity.inn)) missing.push('ИНН');
-  if(!normalize(entity.fiasId)) missing.push('ФИАС / МОД');
   rows.forEach((row, index) => {
     const label = `строка ${index + 1}`;
     if(!normalize(row['КИ для ЧЗ'] || row['КИЗ / SGTIN'])) missing.push(`${label}: КИ`);
@@ -1094,27 +1093,25 @@ async function importWbExcel(file){
       throw new Error(`В файле нет продаж к выводу. Пропущено не-продаж: ${parsed.skippedNotSold}, без КИЗ: ${parsed.skippedNoKiz}`);
     }
 
-    const withdrawKeys = new Set(entity.withdraw.rows.map(makeRowKey));
     const archiveKiz = new Set(entity.archive.rows.map(row => normalize(row['КИЗ / SGTIN'])).filter(Boolean));
     const introduceKiz = new Set(entity.introduce.rows.map(row => normalize(row['КИЗ / SGTIN'])).filter(Boolean));
+    const importedKeys = new Set();
     const imported = [];
     let duplicates = 0;
 
     parsed.rows.forEach(sourceRow => {
       const row = wbExcelDataRow(entity, sourceRow);
       const kiz = normalize(row['КИЗ / SGTIN']);
-      if(withdrawKeys.has(row.__key) || archiveKiz.has(kiz) || introduceKiz.has(kiz)){
+      if(importedKeys.has(row.__key) || archiveKiz.has(kiz) || introduceKiz.has(kiz)){
         duplicates += 1;
         return;
       }
-      withdrawKeys.add(row.__key);
+      importedKeys.add(row.__key);
       imported.push(row);
     });
 
-    if(imported.length){
-      entity.withdraw.rows.push(...imported);
-      await persistEntity(entity, ['withdraw']);
-    }
+    entity.withdraw.rows = imported;
+    await persistEntity(entity, ['withdraw']);
     state.selected.withdraw.clear();
     state.generated.withdraw.clear();
     render();

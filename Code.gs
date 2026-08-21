@@ -463,9 +463,9 @@ function importPublicWbExcelRows(entityId, rows) {
     importedRows.push(row);
   });
 
-  const result = appendNewDataRows_(entity, importedRows);
+  const result = replaceWithdrawRowsFromWbExcel_(entity, importedRows);
   const status = 'Excel WB: продаж ' + importedRows.length
-    + ', добавлено ' + result.withdrawNewRows
+    + ', к выводу ' + result.withdrawRows
     + ', дублей ' + result.duplicateRows
     + ', пропущено ' + skipped;
   updateSettingsSyncStatus_(entity.entityId, status);
@@ -473,10 +473,37 @@ function importPublicWbExcelRows(entityId, rows) {
   return {
     received: rows.length,
     soldRows: importedRows.length,
-    imported: result.withdrawNewRows,
+    imported: result.withdrawRows,
     duplicates: result.duplicateRows,
     skipped,
     message: status
+  };
+}
+
+function replaceWithdrawRowsFromWbExcel_(entity, rows) {
+  const withdrawSheet = getOrCreateSheet_(entity.withdrawSheetName, DATA_HEADERS);
+  const introduceSheet = getOrCreateSheet_(entity.introduceSheetName, DATA_HEADERS);
+  const archiveSheet = getOrCreateSheet_(entity.archiveSheetName, DATA_HEADERS);
+  const archiveKizKeys = readExistingKizKeys_(archiveSheet);
+  const introduceKizKeys = readExistingKizKeys_(introduceSheet);
+  const rowKeys = new Set();
+  const keptRows = [];
+  let duplicateRows = 0;
+
+  rows.forEach(row => {
+    if (rowKeys.has(row.dedupeKey) || archiveKizKeys.has(row.kiz) || introduceKizKeys.has(row.kiz)) {
+      duplicateRows += 1;
+      return;
+    }
+    rowKeys.add(row.dedupeKey);
+    keptRows.push(row);
+  });
+
+  rewriteDataSheet_(withdrawSheet, keptRows);
+
+  return {
+    withdrawRows: keptRows.length,
+    duplicateRows
   };
 }
 

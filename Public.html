@@ -453,7 +453,6 @@
     function missingWithdrawFields(entity, rows){
       const missing = [];
       if(!normalize(entity.inn)) missing.push('ИНН');
-      if(!normalize(entity.fiasId)) missing.push('ФИАС / МОД');
       rows.forEach((row, index) => {
         const label = `строка ${index + 1}`;
         if(!normalize(row.czKi || row.kiz)) missing.push(`${label}: КИ`);
