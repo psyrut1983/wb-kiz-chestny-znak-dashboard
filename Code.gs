@@ -3058,8 +3058,15 @@ function formatMaybeDate_(value) {
 function formatWbDateOnly_(value) {
   const text = String(value || '').trim();
   if (!text) return '';
+  let match = text.match(/(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+  if (match) {
+    return match[1] + '-' + String(match[2]).padStart(2, '0') + '-' + String(match[3]).padStart(2, '0');
+  }
+  match = text.match(/(\d{1,2})\.(\d{1,2})\.(\d{4})/);
+  if (match) {
+    return match[3] + '-' + String(match[2]).padStart(2, '0') + '-' + String(match[1]).padStart(2, '0');
+  }
   const date = new Date(text);
   if (!Number.isNaN(date.getTime())) return Utilities.formatDate(date, TZ, 'yyyy-MM-dd');
-  const match = text.match(/\d{4}-\d{2}-\d{2}/);
-  return match ? match[0] : text;
+  return text;
 }
